@@ -4,13 +4,12 @@ import DashboardLayout from '@/components/layout/DashboardLayout';
 import AuthGuard from '@/components/auth/AuthGuard';
 import { adminApi, usersApi } from '@/lib/api';
 import { User } from '@/types';
-import { Card, Spinner, Badge, Avatar } from '@/components/ui';
+import { Spinner, Badge, Avatar } from '@/components/ui';
 import { formatBytes } from '@/lib/utils';
 import { HardDrive, TrendingUp } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRouter } from 'next/navigation';
 import { handleApiError } from '@/lib/error-handler';
-import { error } from 'console';
 
 export default function AdminStoragePage() {
   const { user: me } = useAuth();
@@ -30,7 +29,7 @@ export default function AdminStoragePage() {
           const u = usersRes.value.data?.users || usersRes.value.data?.data || usersRes.value.data || [];
           setUsers(Array.isArray(u) ? u : []);
         }
-      } catch {handleApiError(error) }
+      } catch(error) {handleApiError(error) }
       finally { setLoading(false); }
     })();
   }, [me, router]);

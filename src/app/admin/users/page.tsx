@@ -4,15 +4,15 @@ import DashboardLayout from '@/components/layout/DashboardLayout';
 import AuthGuard from '@/components/auth/AuthGuard';
 import { usersApi } from '@/lib/api';
 import { User } from '@/types';
-import { Badge, Avatar, Modal, Input, EmptyState, SearchInput } from '@/components/ui';
+import { Badge, Avatar, Modal, EmptyState, SearchInput } from '@/components/ui';
 import { formatBytes, formatDate } from '@/lib/utils';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRouter } from 'next/navigation';
 import { UserPlus, Edit3, Power, PowerOff, Trash2, HardDrive, RefreshCw } from 'lucide-react';
 import { handleApiError } from '@/lib/error-handler';
-import { error } from 'console';
 import { showToast } from '@/lib/toast';
 import Button from '@/components/ui/Button';
+import Input from '@/components/ui/Input';
 
 export default function AdminUsersPage() {
   const { user: me } = useAuth();
@@ -37,7 +37,7 @@ export default function AdminUsersPage() {
       const res = await usersApi.list({ limit: 100 });
       const u = res.data?.users || res.data?.data || res.data || [];
       setUsers(Array.isArray(u) ? u : []);
-    } catch { handleApiError(error); }
+    } catch(error) { handleApiError(error); }
     finally { setLoading(false); }
   }, []);
 
@@ -63,7 +63,7 @@ export default function AdminUsersPage() {
       else await usersApi.activate(user.id);
       showToast.success( `User ${user.isActive ? 'deactivated' : 'activated'}`);
       load();
-    } catch { handleApiError(error) }
+    } catch(error) { handleApiError(error) }
   }
 
   async function deleteUser(id: string, name: string) {
@@ -72,7 +72,7 @@ export default function AdminUsersPage() {
       await usersApi.delete(id);
       showToast.success('User deleted');
       load();
-    } catch {  handleApiError(error) }
+    } catch(error) {  handleApiError(error) }
   }
 
   async function updateQuota(e: React.FormEvent) {
@@ -86,7 +86,7 @@ export default function AdminUsersPage() {
       showToast.success('Quota updated');
       setShowQuota(false);
       load();
-    } catch {  handleApiError(error)}
+    } catch(error) {  handleApiError(error)}
     finally { setCreating(false); }
   }
 

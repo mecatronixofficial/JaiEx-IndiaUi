@@ -5,15 +5,13 @@ import DashboardLayout from "@/components/layout/DashboardLayout";
 import AuthGuard from "@/components/auth/AuthGuard";
 import { adminApi } from "@/lib/api";
 import { AdminOverview } from "@/types";
-import { Card, Spinner } from "@/components/ui";
+import { Spinner } from "@/components/ui";
 import { formatBytes, formatRelative } from "@/lib/utils";
-
 import { Users, Files, HardDrive, Activity, Upload } from "lucide-react";
-
 import { useAuth } from "@/contexts/AuthContext";
 import { useRouter } from "next/navigation";
 import { handleApiError } from "@/lib/error-handler";
-import { error } from "console";
+import Card from "@/components/ui/Card";
 
 export default function AdminPage() {
   const { user } = useAuth();
@@ -52,8 +50,8 @@ export default function AdminPage() {
 
           setActivity(Array.isArray(data) ? data.slice(0, 10) : []);
         }
-      } catch {
-        handleApiError(error);
+      } catch(err) {
+        handleApiError(err);
       } finally {
         setLoading(false);
       }
