@@ -1,0 +1,244 @@
+/* =========================================
+   GOOGLE FONTS
+========================================= */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@100;200;300;400;500;600;700;800;900&family=DM+Sans:wght@400;500;700&family=Poppins:wght@300;400;500;600;700;800&display=swap');
+
+/* =========================================
+   TAILWIND
+========================================= */
+
+@import "tailwindcss";
+
+/* =========================================
+   BASE LAYER
+========================================= */
+
+@layer base {
+  :root {
+    /* Backgrounds */
+    --bg: #ffffff;
+    --bg-2: #fafafa;
+    --bg-3: #f5f5f5;
+    --bg-card: #ffffff;
+
+    /* Borders */
+    --border: #e5e5e5;
+    --border-hover: #d4d4d4;
+
+    /* Text */
+    --text: #171717;
+    --text-muted: #737373;
+    --text-dim: #a3a3a3;
+
+    /* Accent */
+    --accent: #f97316;
+    --accent-2: #fb923c;
+    --accent-hover: #ea580c;
+
+    /* Status */
+    --green: #10b981;
+    --red: #ef4444;
+    --yellow: #f59e0b;
+    --blue: #3b82f6;
+
+    --radius: 12px;
+  }
+
+  .dark {
+    --bg: #0a0a0a;
+    --bg-2: #141414;
+    --bg-3: #1a1a1a;
+    --bg-card: #1f1f1f;
+
+    --border: #2a2a2a;
+    --border-hover: #3a3a3a;
+
+    --text: #fafafa;
+    --text-muted: #a3a3a3;
+    --text-dim: #737373;
+
+    --accent: #f97316;
+    --accent-2: #fb923c;
+    --accent-hover: #fdba74;
+  }
+
+  * {
+    box-sizing: border-box;
+    transition:
+      color 0.2s ease,
+      background-color 0.2s ease,
+      border-color 0.2s ease;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    font-family: 'Inter', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-family: 'Poppins', sans-serif;
+  }
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 10px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 10px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #a8a8a8;
+}
+
+.dark .custom-scrollbar::-webkit-scrollbar-track {
+  background: #1f2937;
+}
+
+.dark .custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #4b5563;
+}
+
+/* =========================================
+   COMPONENTS
+========================================= */
+
+@layer components {
+  /* BUTTONS */
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-medium transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:pointer-events-none;
+  }
+
+  .btn-primary {
+    @apply bg-orange-500 text-white hover:bg-orange-600 focus:ring-orange-500;
+  }
+
+  .btn-secondary {
+    @apply border border-gray-200 bg-white text-gray-900 hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-800 dark:text-white dark:hover:bg-gray-700;
+  }
+
+  .btn-outline {
+    @apply border border-orange-500 text-orange-500 hover:bg-orange-500 hover:text-white;
+  }
+
+  .btn-danger {
+    @apply bg-red-500 text-white hover:bg-red-600;
+  }
+
+  /* CARDS */
+
+  .card {
+    @apply rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800;
+  }
+
+  .card-hover {
+    @apply transition-all duration-300 hover:-translate-y-1 hover:shadow-xl;
+  }
+
+  /* INPUTS */
+
+  .input {
+    @apply w-full rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm outline-none transition-all duration-200 focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20 dark:border-gray-700 dark:bg-gray-900 dark:text-white;
+  }
+
+  .label {
+    @apply mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300;
+  }
+
+  /* BADGES */
+
+  .badge {
+    @apply inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium;
+  }
+
+  .badge-success {
+    @apply bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400;
+  }
+
+  .badge-error {
+    @apply bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400;
+  }
+
+  .badge-warning {
+    @apply bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400;
+  }
+
+  .badge-info {
+    @apply bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400;
+  }
+
+  .badge-accent {
+    @apply bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400;
+  }
+
+  /* CONTAINER */
+
+  .container-custom {
+    @apply mx-auto max-w-7xl px-4 sm:px-6 lg:px-8;
+  }
+
+  /* GLASS */
+
+  .glass {
+    @apply border border-white/10 bg-white/10 backdrop-blur-xl;
+  }
+
+  /* GRADIENT TEXT */
+
+  .gradient-text {
+    @apply bg-gradient-to-r from-orange-500 to-orange-600 bg-clip-text text-transparent;
+  }
+}
+
+/* =========================================
+   UTILITIES
+========================================= */
+
+@layer utilities {
+  .scrollbar-custom {
+    scrollbar-width: thin;
+    scrollbar-color: var(--accent) var(--bg-2);
+  }
+
+  .scrollbar-custom::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  .scrollbar-custom::-webkit-scrollbar-track {
+    @apply rounded-full bg-gray-100 dark:bg-gray-800;
+  }
+
+  .scrollbar-custom::-webkit-scrollbar-thumb {
+    @apply rounded-full bg-orange-400 hover:bg-orange-500;
+  }
+
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+}
