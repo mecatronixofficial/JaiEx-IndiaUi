@@ -142,7 +142,7 @@ export default function SystemHealthPage() {
             </div>
             <button type="button" onClick={() => load()} disabled={loading}
               className="flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition-all hover:bg-gray-50 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-gray-300">
-              {loading ? <Spinner size="sm" /> : <RefreshCw size={14} />} Refresh
+              {loading ? <Spinner size={14} /> : <RefreshCw size={14} />} Refresh
             </button>
           </div>
 
