@@ -1,15 +1,24 @@
 import { toast } from "sonner";
 
+type ToastOptions = Parameters<typeof toast.success>[1];
+
 export const showToast = {
-  success: (message: string) => toast.success(message),
+  success: (message: string, options?: ToastOptions) =>
+    toast.success(message, options),
 
-  error: (message: string) => toast.error(message),
+  error: (message: string, options?: ToastOptions) =>
+    toast.error(message, options),
 
-  info: (message: string) => toast.info(message),
+  info: (message: string, options?: ToastOptions) =>
+    toast.info(message, options),
 
-  warning: (message: string) => toast.warning(message),
+  warning: (message: string, options?: ToastOptions) =>
+    toast.warning(message, options),
 
-  loading: (message: string) => toast.loading(message),
+  loading: (message: string, options?: ToastOptions) =>
+    toast.loading(message, options),
 
   promise: toast.promise,
+
+  dismiss: toast.dismiss,
 };

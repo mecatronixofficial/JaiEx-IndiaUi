@@ -1,24 +1,39 @@
-import axios, { AxiosError, AxiosInstance, AxiosProgressEvent } from "axios";
+import axios, {
+  AxiosError,
+  AxiosInstance,
+  AxiosProgressEvent,
+  InternalAxiosRequestConfig,
+} from "axios";
 
 /* =========================
    CONFIG
 ========================= */
 
-const BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api/v1";
+export const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "/api/v1";
+const MAX_429_RETRIES = 3;
+const DEFAULT_429_WAIT_MS = 5000;
+const MAX_429_WAIT_MS = 30000;
+
+/* =========================
+   TYPES
+========================= */
+
+type RetryableRequest = InternalAxiosRequestConfig & {
+  _retry?: boolean;
+  _retryCount?: number;
+};
+
+type QueueItem = {
+  resolve: () => void;
+  reject: (error: unknown) => void;
+};
 
 /* =========================
    SINGLETON STATE
 ========================= */
 
-let api: AxiosInstance;
+let api: AxiosInstance | undefined;
 let isRefreshing = false;
-
-type QueueItem = {
-  resolve: (value?: unknown) => void;
-  reject: (error: unknown) => void;
-};
-
 let failedQueue: QueueItem[] = [];
 
 /* =========================
@@ -27,19 +42,51 @@ let failedQueue: QueueItem[] = [];
 
 function processQueue(error?: unknown) {
   failedQueue.forEach((p) => {
-    error ? p.reject(error) : p.resolve();
+    if (error) {
+      p.reject(error);
+    } else {
+      p.resolve();
+    }
   });
   failedQueue = [];
 }
 
 /* =========================
-   REDIRECT HANDLER
+   HELPERS
 ========================= */
 
-function redirectToLogin() {
-  if (typeof window !== "undefined") {
-    window.location.href = "/login";
+function parseRetryAfter(headerValue: string | undefined): number {
+  if (!headerValue) return DEFAULT_429_WAIT_MS;
+
+  // Numeric seconds form
+  const asNum = Number(headerValue);
+  if (Number.isFinite(asNum) && asNum >= 0) {
+    return Math.min(asNum * 1000, MAX_429_WAIT_MS);
   }
+
+  // HTTP-date form
+  const asDate = Date.parse(headerValue);
+  if (!Number.isNaN(asDate)) {
+    const diff = asDate - Date.now();
+    return Math.min(Math.max(diff, 0), MAX_429_WAIT_MS);
+  }
+
+  return DEFAULT_429_WAIT_MS;
+}
+
+function isExcludedAuthRoute(url?: string): boolean {
+  if (!url) return false;
+  const excluded = [
+    "/auth/login",
+    "/auth/logout",
+    "/auth/refresh",
+    "/auth/forgot-password",
+    "/auth/reset-password",
+  ];
+  // Match by path segment to avoid false positives like `/auth/login-foo`
+  return excluded.some(
+    (route) => url.endsWith(route) || url.includes(`${route}?`),
+  );
 }
 
 /* =========================
@@ -61,67 +108,86 @@ export function getApi(): AxiosInstance {
   /* =========================
      RESPONSE INTERCEPTOR
   ========================= */
+
   api.interceptors.response.use(
-    (res) => res,
+    (response) => response,
+
     async (error: AxiosError) => {
-      const originalRequest: any = error.config;
-      const status = error.response?.status;
+      const originalRequest = error.config as RetryableRequest | undefined;
 
-      if (!originalRequest) return Promise.reject(error);
+      // Network / CORS / timeout (no response at all)
+      if (!error.response) {
+        if (process.env.NODE_ENV === "development") {
+          console.error("Network/CORS error:", error.message);
+        }
+        return Promise.reject(error);
+      }
 
-      const excludedRoutes = [
-        "/auth/login",
-        "/auth/logout",
-        "/auth/refresh",
-        "/auth/forgot-password",
-        "/auth/reset-password",
-        "/auth/me",
-      ];
+      if (!originalRequest) {
+        return Promise.reject(error);
+      }
 
-      const isExcluded = excludedRoutes.some((r) =>
-        originalRequest.url?.includes(r),
-      );
+      const status = error.response.status;
+
+      if (process.env.NODE_ENV === "development") {
+        console.log("API ERROR:", status, originalRequest.url);
+      }
+
+      const isExcluded = isExcludedAuthRoute(originalRequest.url);
 
       /* =========================
-         RATE LIMIT HANDLING
+         RATE LIMIT (429) — bounded retry
       ========================= */
       if (status === 429) {
-        const retryAfter = error.response?.headers?.["retry-after"];
-        const wait = retryAfter ? parseInt(retryAfter) * 1000 : 5000;
+        originalRequest._retryCount = (originalRequest._retryCount ?? 0) + 1;
+        if (originalRequest._retryCount > MAX_429_RETRIES) {
+          return Promise.reject(error);
+        }
 
-        await new Promise((r) => setTimeout(r, wait));
-        return api(originalRequest);
+        const retryAfter = (
+          error.response.headers as Record<string, string> | undefined
+        )?.["retry-after"];
+        const waitTime = parseRetryAfter(retryAfter);
+
+        await new Promise((resolve) => setTimeout(resolve, waitTime));
+        return api!(originalRequest);
       }
 
       /* =========================
-         REFRESH TOKEN FLOW
+         REFRESH TOKEN FLOW (401)
       ========================= */
       if (status === 401 && !originalRequest._retry && !isExcluded) {
+        originalRequest._retry = true;
+
+        // Another request is already refreshing — wait for it
         if (isRefreshing) {
           return new Promise((resolve, reject) => {
             failedQueue.push({
-              resolve: () => resolve(api(originalRequest)),
+              resolve: () => api!(originalRequest).then(resolve).catch(reject),
               reject,
             });
           });
         }
 
-        originalRequest._retry = true;
         isRefreshing = true;
 
         try {
-          await api.post("/auth/refresh");
-
+          await api!.post("/auth/refresh");
           processQueue();
-          return api(originalRequest);
+          return api!(originalRequest);
         } catch (err) {
           processQueue(err);
-          redirectToLogin();
+          // redirectToLogin();
           return Promise.reject(err);
         } finally {
           isRefreshing = false;
         }
       }
+
+      // Refresh endpoint itself returned 401 — session is gone
+      // if (status === 401 && originalRequest.url?.endsWith("/auth/refresh")) {
+      //   redirectToLogin();
+      // }
 
       return Promise.reject(error);
     },
@@ -132,7 +198,7 @@ export function getApi(): AxiosInstance {
 
 /* =========================
    AUTH API
-   ✅ No token storage needed - cookies handled by browser
+   ✅ No token storage needed — cookies handled by browser
 ========================= */
 
 export const authApi = {
@@ -140,6 +206,9 @@ export const authApi = {
     getApi().post("/auth/login", { email, password }),
 
   logout: () => getApi().post("/auth/logout"),
+
+  /** Revoke all sessions across all devices for the current user. */
+  logoutAll: () => getApi().post("/auth/logout-all"),
 
   me: () => getApi().get("/auth/me"),
 
@@ -151,9 +220,17 @@ export const authApi = {
   resetPassword: (data: { email: string; otp: string; newPassword: string }) =>
     getApi().post("/auth/reset-password", data),
 
-  verifyEmail: (otp: string) => getApi().post("/auth/verify-email", { otp }),
+  /** Verify an OTP for any purpose (email verify, password reset, etc.) */
+  verifyOtp: (data: { email: string; otp: string; purpose: string }) =>
+    getApi().post("/auth/verify-otp", data),
 
-  sendVerificationOTP: () => getApi().post("/auth/send-verification-otp"),
+  /** Request a new OTP for a sensitive action (must be authenticated). */
+  requestOtp: (data: { purpose: string; fileId?: string }) =>
+    getApi().post("/auth/request-otp", data),
+
+  /** Resend an OTP — public endpoint, no auth required. */
+  resendOtp: (data: { email: string; purpose?: string }) =>
+    getApi().post("/auth/resend-otp", data),
 };
 
 /* =========================
@@ -161,31 +238,58 @@ export const authApi = {
 ========================= */
 
 export const usersApi = {
+  /** Admin: create a new user */
   create: (data: Record<string, unknown>) => getApi().post("/users", data),
 
+  /** Admin: list users — supports page, limit, search, role, isActive */
   list: (params?: Record<string, unknown>) =>
     getApi().get("/users", { params }),
 
+  /** Own profile */
   me: () => getApi().get("/users/me"),
 
-  getById: (id: string) => getApi().get(`/users/${id}`),
+  /** Update own profile (name/department/phone/avatar only) */
+  updateMe: (data: Record<string, unknown>) => getApi().patch("/users/me", data),
 
-  update: (id: string, data: Record<string, unknown>) =>
-    getApi().patch(`/users/${id}`, data),
+  /** Own storage usage */
+  myStorage: () => getApi().get("/users/me/storage"),
 
+  /** Change own password */
   updatePassword: (data: { currentPassword: string; newPassword: string }) =>
     getApi().put("/users/me/password", data),
 
+  /** Admin: get any user by id */
+  getById: (id: string) => getApi().get(`/users/${id}`),
+
+  /** Admin: update any user field */
+  updateById: (id: string, data: Record<string, unknown>) =>
+    getApi().patch(`/users/${id}`, data),
+
+  /** Admin: activate user */
   activate: (id: string) => getApi().patch(`/users/${id}/activate`),
 
+  /** Admin: deactivate user */
   deactivate: (id: string) => getApi().patch(`/users/${id}/deactivate`),
 
+  /** Superadmin: hard-delete user */
   delete: (id: string) => getApi().delete(`/users/${id}`),
 
+  /** Admin: get user storage usage */
   getStorage: (id: string) => getApi().get(`/users/${id}/storage`),
 
+  /** Admin: storage usage for all visible users */
+  storageUsage: (params?: Record<string, unknown>) =>
+    getApi().get("/users/storage/usage", { params }),
+
+  /** Admin: update storage quota */
   updateQuota: (id: string, quotaBytes: number) =>
     getApi().patch(`/users/${id}/quota`, { quotaBytes }),
+
+  /** Admin: force-recalculate storage from file records */
+  syncStorage: (id: string) => getApi().post(`/users/${id}/sync-storage`),
+
+  /** Admin: aggregate stats (total, active, by role, storage totals) */
+  adminStats: () => getApi().get("/users/admin/stats"),
 };
 
 /* =========================
@@ -193,39 +297,80 @@ export const usersApi = {
 ========================= */
 
 export const filesApi = {
-  list: (params?: Record<string, unknown>, signal?: AbortSignal) =>
-    getApi().get("/files", { params, signal }),
+  list: (params?: Record<string, unknown>, signal?: AbortSignal) => {
+    // Backend expects `search` not `q`; drop unsupported `type` filter.
+    if (params) {
+      const mapped: Record<string, unknown> = { ...params };
+      delete mapped.type;
+      if (mapped.q !== undefined) {
+        mapped.search = mapped.q;
+        delete mapped.q;
+      }
+      params = mapped;
+    }
+    return getApi().get("/files", { params, signal });
+  },
 
   getById: (id: string) => getApi().get(`/files/${id}`),
 
   getTrash: () => getApi().get("/files/trash"),
 
-  download: (id: string, signal?: AbortSignal) =>
-    getApi().get(`/files/${id}/download`, {
-      responseType: "blob",
-      signal,
-    }),
+  sharedWithMe: (params?: Record<string, unknown>) =>
+    getApi().get("/files/shared-with-me", { params }),
 
-  delete: (id: string) => getApi().delete(`/files/${id}`),
+  create: (data: {
+    key: string;
+    originalName: string;
+    size: number;
+    mimeType: string;
+    folderId?: string;
+    fileId?: string;
+    uploadSessionId?: string;
+    tags?: string[];
+  }) => getApi().post("/files", data),
+
+  // Returns { success, data: { downloadUrl, file, expiresIn } } — use downloadUrl to fetch.
+  download: (id: string, signal?: AbortSignal) =>
+    getApi().get(`/files/${id}/download`, { signal }),
+
+  /** Update file description and/or tags. */
+  update: (id: string, data: { description?: string; tags?: string[] }) =>
+    getApi().patch(`/files/${id}`, data),
+
+  delete: (id: string, otpCode: string) =>
+    getApi().delete(`/files/${id}`, { data: { otpCode } }),
 
   restore: (id: string) => getApi().patch(`/files/${id}/restore`),
 
   permanentDelete: (id: string) => getApi().delete(`/files/${id}/permanent`),
 
   rename: (id: string, name: string) =>
-    getApi().patch(`/files/${id}/rename`, { name }),
+    getApi().patch(`/files/${id}/rename`, { fileName: name }),
 
-  move: (id: string, folderId: string | null) =>
-    getApi().patch(`/files/${id}/move`, { folderId }),
+  bulkDelete: (ids: string[], otpCode: string) =>
+    getApi().post("/files/bulk-delete", { fileIds: ids, otpCode }),
 
-  share: (id: string, data: { userId: string; permission: string }) =>
-    getApi().post(`/files/${id}/share`, data),
+  bulkRestore: (ids: string[]) => getApi().post("/files/bulk-restore", { fileIds: ids }),
 
-  star: (id: string) => getApi().post(`/files/${id}/star`),
+  bulkMove: (ids: string[], folderId: string | null) =>
+    getApi().post("/files/bulk-move", { fileIds: ids, folderId }),
 
-  bulkDelete: (ids: string[]) => getApi().post("/files/bulk-delete", { ids }),
+  /** Save multiple file metadata records in one request (after folder upload). */
+  batchCreate: (files: {
+    key: string;
+    originalName: string;
+    size: number;
+    mimeType: string;
+    folderId?: string;
+    uploadSessionId?: string;
+    relativePath?: string;
+    tags?: string[];
+  }[]) => getApi().post("/files/batch", { files }),
 
-  bulkRestore: (ids: string[]) => getApi().post("/files/bulk-restore", { ids }),
+  /** Get a short-lived inline view URL for browser preview. */
+  getViewUrl: (id: string) => getApi().get(`/files/${id}/view`),
+
+  adminStats: () => getApi().get("/files/admin/stats"),
 };
 
 /* =========================
@@ -237,13 +382,17 @@ export const uploadApi = {
     file: File,
     folderId?: string,
     onProgress?: (progress: number) => void,
+    signal?: AbortSignal,
   ) => {
     const formData = new FormData();
     formData.append("file", file);
     if (folderId) formData.append("folderId", folderId);
 
-    return getApi().post("/files/upload", formData, {
-      headers: { "Content-Type": "multipart/form-data" },
+    // POST /upload/file — server-side upload to R2 (no browser CORS needed).
+    // Content-Type must be unset so the browser can attach the multipart boundary.
+    return getApi().post("/upload/file", formData, {
+      signal,
+      headers: { "Content-Type": undefined },
       onUploadProgress: (progressEvent: AxiosProgressEvent) => {
         if (onProgress && progressEvent.total) {
           const percent = Math.round(
@@ -260,20 +409,61 @@ export const uploadApi = {
     contentType: string;
     size: number;
     folderId?: string;
-  }) => getApi().post("/upload/presigned-url", data),
+  }) => getApi().post("/upload/presigned-url", {
+    fileName:  data.filename,
+    mimeType:  data.contentType,
+    fileSize:  data.size,
+    folderId:  data.folderId,
+  }),
 
   initiateMultipart: (data: {
     filename: string;
     contentType: string;
     size: number;
     folderId?: string;
-  }) => getApi().post("/upload/multipart/initiate", data),
+    partSize?: number;
+  }) => getApi().post("/upload/multipart/initiate", {
+    fileName:  data.filename,
+    mimeType:  data.contentType,
+    fileSize:  data.size,
+    folderId:  data.folderId,
+    partCount: Math.ceil(data.size / (data.partSize ?? 50 * 1024 * 1024)),
+  }),
 
   completeMultipart: (data: {
     uploadId: string;
     key: string;
     parts: { ETag: string; PartNumber: number }[];
-  }) => getApi().post("/upload/multipart/complete", data),
+  }) => getApi().post("/upload/multipart/complete", {
+    uploadId: data.uploadId,
+    key: data.key,
+    parts: data.parts.map((p) => ({ partNumber: p.PartNumber, etag: p.ETag })),
+  }),
+
+  /** Get a presigned URL for uploading a single part (used during multipart). */
+  getPartUrl: (data: { uploadId: string; key: string; partNumber: number }) =>
+    getApi().post("/upload/multipart/part-url", data),
+
+  /** Abort an in-progress multipart upload and free the parts. */
+  abortMultipart: (data: { uploadId: string; key: string }) =>
+    getApi().post("/upload/multipart/abort", data),
+
+  /** Initiate a folder upload — returns presigned part URLs for all files. */
+  folderUpload: (data: {
+    folderName: string;
+    parentFolderId?: string;
+    files: { fileName: string; mimeType: string; fileSize: number; relativePath?: string }[];
+  }) => getApi().post("/upload/folder", data),
+
+  /** List the current user's upload sessions. */
+  getSessions: (params?: { status?: string; limit?: number }) =>
+    getApi().get("/upload/sessions", { params }),
+
+  /** Get a single upload session by ID. */
+  getSession: (id: string) => getApi().get(`/upload/sessions/${id}`),
+
+  /** Cancel (abort) an upload session. */
+  cancelSession: (id: string) => getApi().delete(`/upload/sessions/${id}`),
 };
 
 /* =========================
@@ -281,25 +471,37 @@ export const uploadApi = {
 ========================= */
 
 export const foldersApi = {
-  create: (data: { name: string; parentId?: string }) =>
+  create: (data: { name: string; parentId?: string; description?: string; color?: string }) =>
     getApi().post("/folders", data),
 
+  /** Paginated flat list; supports parentId, search, page, limit */
   list: (params?: Record<string, unknown>) =>
     getApi().get("/folders", { params }),
 
   tree: () => getApi().get("/folders/tree"),
 
+  trash: () => getApi().get("/folders/trash"),
+
   getById: (id: string) => getApi().get(`/folders/${id}`),
 
   getContents: (id: string) => getApi().get(`/folders/${id}/contents`),
 
-  update: (id: string, data: { name: string }) =>
-    getApi().put(`/folders/${id}`, data),
+  getFiles: (id: string, params?: Record<string, unknown>) =>
+    getApi().get(`/folders/${id}/files`, { params }),
 
-  delete: (id: string) => getApi().delete(`/folders/${id}`),
+  update: (id: string, data: { name?: string; description?: string; color?: string }) =>
+    getApi().patch(`/folders/${id}`, data),
 
   move: (id: string, parentId: string | null) =>
     getApi().patch(`/folders/${id}/move`, { parentId }),
+
+  restore: (id: string) => getApi().patch(`/folders/${id}/restore`),
+
+  delete: (id: string) => getApi().delete(`/folders/${id}`),
+
+  hardDelete: (id: string) => getApi().delete(`/folders/${id}/permanent`),
+
+  adminStats: () => getApi().get("/folders/admin/stats"),
 };
 
 /* =========================
@@ -319,11 +521,22 @@ export const notificationsApi = {
   list: (params?: { page?: number; limit?: number }) =>
     getApi().get("/notifications", { params }),
 
+  unreadCount: () => getApi().get("/notifications/unread-count"),
+
   markRead: (id: string) => getApi().patch(`/notifications/${id}/read`),
 
   markAllRead: () => getApi().patch("/notifications/read-all"),
 
-  getUnreadCount: () => getApi().get("/notifications/unread/count"),
+  bulkMarkRead: (ids: string[]) =>
+    getApi().patch("/notifications/bulk-read", { ids }),
+
+  deleteOne: (id: string) => getApi().delete(`/notifications/${id}`),
+
+  deleteAllRead: () => getApi().delete("/notifications/read"),
+
+  deleteAll: () => getApi().delete("/notifications"),
+
+  adminStats: () => getApi().get("/notifications/admin/stats"),
 };
 
 /* =========================
@@ -342,18 +555,248 @@ export const transactionsApi = {
 };
 
 /* =========================
+   SHARES API
+   Covers public token-access and authenticated CRUD.
+========================= */
+
+export const sharesApi = {
+  /* ── public (no auth) ── */
+  accessViaToken: (token: string, password?: string) =>
+    getApi().get(`/shares/link/${token}`, password ? { params: { password } } : {}),
+
+  downloadViaToken: (token: string, password?: string) =>
+    getApi().post(`/shares/link/${token}/download`, password ? { password } : {}),
+
+  /** Browse a subfolder within a shared folder. */
+  accessViaTokenFolder: (token: string, folderId: string, password?: string) =>
+    getApi().get(`/shares/link/${token}/folder/${folderId}`, password ? { params: { password } } : {}),
+
+  /** Download a single file from a shared resource. */
+  downloadViaTokenFile: (token: string, fileId: string, password?: string) =>
+    getApi().get(`/shares/link/${token}/file/${fileId}/download`, password ? { params: { password } } : {}),
+
+  /* ── authenticated CRUD ── */
+  create: (data: {
+    resourceType: "file" | "folder";
+    resourceId?: string;
+    fileId?: string;
+    folderId?: string;
+    type: "link" | "email" | "private";
+    emails?: string[];
+    sharedWithEmails?: string[];
+    sharedWithUserIds?: string[];
+    permission?: "view" | "download";
+    expiresAt?: string;
+    expiresIn?: number;
+    password?: string;
+    name?: string;
+    message?: string;
+  }) => {
+    const expiresAt = data.expiresAt
+      ?? (data.expiresIn
+        ? new Date(Date.now() + data.expiresIn * 86_400_000).toISOString()
+        : undefined);
+    return getApi().post("/shares", {
+      resourceType: data.resourceType,
+      fileId: data.fileId ?? (data.resourceType === "file" ? data.resourceId : undefined),
+      folderId: data.folderId ?? (data.resourceType === "folder" ? data.resourceId : undefined),
+      type: data.type,
+      sharedWithEmails: data.sharedWithEmails ?? data.emails,
+      sharedWithUserIds: data.sharedWithUserIds,
+      permission: data.permission,
+      expiresAt,
+      password: data.password,
+      name: data.name,
+      message: data.message,
+    });
+  },
+
+  list: (params?: { page?: number; limit?: number; type?: string; status?: string }) =>
+    getApi().get("/shares", { params }),
+
+  getById: (id: string) => getApi().get(`/shares/${id}`),
+
+  getAccesses: (id: string, params?: { page?: number; limit?: number }) =>
+    getApi().get(`/shares/${id}/accesses`, { params }),
+
+  update: (id: string, data: Record<string, unknown>) =>
+    getApi().patch(`/shares/${id}`, data),
+
+  revoke: (id: string) => getApi().patch(`/shares/${id}/revoke`),
+
+  delete: (id: string) => getApi().delete(`/shares/${id}`),
+
+  /* ── admin ── */
+  adminAll: (params?: Record<string, unknown>) =>
+    getApi().get("/shares/admin/all", { params }),
+
+  adminAccesses: (params?: Record<string, unknown>) =>
+    getApi().get("/shares/admin/accesses", { params }),
+
+  adminAnalytics: () => getApi().get("/shares/admin/analytics"),
+};
+
+/* =========================
    ADMIN API
 ========================= */
 
+/* =========================
+   LINKS API
+========================= */
+
+export const linksApi = {
+  /* ── public (no auth) ── */
+
+  /** View a share/transfer link by short code. Password optional for protected links. */
+  publicView: (shortCode: string, password?: string) =>
+    getApi().get(`/links/l/${shortCode}`, password ? { params: { password } } : {}),
+
+  /** Browse a folder inside a share-type link. */
+  publicFolderContents: (shortCode: string, folderId: string, password?: string) =>
+    getApi().get(`/links/l/${shortCode}/folder/${folderId}`, password ? { params: { password } } : {}),
+
+  /** Get a presigned download URL for a file accessible through the link. */
+  publicFileDownload: (shortCode: string, fileId: string, password?: string) =>
+    getApi().get(`/links/l/${shortCode}/file/${fileId}/download`, password ? { params: { password } } : {}),
+
+  /* ── user (own links) ── */
+  list: (params?: { status?: string; page?: number; limit?: number }) =>
+    getApi().get("/links", { params }),
+
+  disable: (id: string) => getApi().patch(`/links/${id}/disable`),
+  enable:  (id: string) => getApi().patch(`/links/${id}/enable`),
+  delete:  (id: string) => getApi().delete(`/links/${id}`),
+  renew:   (id: string, days?: number) => getApi().patch(`/links/${id}/renew`, { days }),
+
+  /* ── admin (all users' links, no ownership check) ── */
+  adminList: (params?: { status?: string; page?: number; limit?: number }) =>
+    getApi().get("/links/admin/all", { params }),
+
+  adminDisable: (id: string) => getApi().patch(`/links/admin/${id}/disable`),
+  adminEnable:  (id: string) => getApi().patch(`/links/admin/${id}/enable`),
+  adminDelete:  (id: string) => getApi().delete(`/links/admin/${id}`),
+  adminRenew:   (id: string, days?: number) => getApi().patch(`/links/admin/${id}/renew`, { days }),
+};
+
 export const adminApi = {
   overview: () => getApi().get("/admin/overview"),
+
   storage: () => getApi().get("/admin/storage"),
-  activity: (params?: { days?: number }) =>
+
+  /** Cross-entity activity feed: recent file uploads, transfers, user registrations. */
+  activity: (params?: { limit?: number }) =>
     getApi().get("/admin/activity", { params }),
-  users: (params?: { page?: number; limit?: number }) =>
-    getApi().get("/admin/users", { params }),
-  companies: (params?: Record<string, unknown>) =>
-    getApi().get("/admin/companies", { params }),
+
+  users: (params?: {
+    page?: number;
+    limit?: number;
+    search?: string;
+    role?: string;
+    isActive?: boolean;
+  }) => getApi().get("/admin/users", { params }),
+
+  files: (params?: {
+    page?: number;
+    limit?: number;
+    search?: string;
+    mimeType?: string;
+    includeTrashed?: boolean;
+  }) => getApi().get("/admin/files", { params }),
+
+  shares: (params?: { page?: number; limit?: number }) =>
+    getApi().get("/admin/shares", { params }),
+
+  sharesAnalytics: () => getApi().get("/admin/shares/analytics"),
+
+  transfers: (params?: {
+    page?: number;
+    limit?: number;
+    search?: string;
+    status?: "active" | "expired" | "disabled";
+    method?: "email" | "link" | "qr";
+  }) => getApi().get("/admin/transfers", { params }),
+
+  links: (params?: {
+    page?: number;
+    limit?: number;
+    status?: "active" | "expired" | "disabled";
+    type?: "share" | "transfer";
+  }) => getApi().get("/admin/links", { params }),
+
+  uploadSessions: (params?: {
+    page?: number;
+    limit?: number;
+    status?: "uploading" | "completed" | "failed" | "aborted";
+  }) => getApi().get("/admin/upload-sessions", { params }),
+
+  /** Superadmin-only system view — same data as overview but enforces superadmin role. */
+  system: () => getApi().get("/admin/system"),
+};
+
+/* =========================
+   SUPERADMIN API
+   Extends adminApi with an analytics alias (same data, different caller context).
+========================= */
+
+export const superadminApi = {
+  ...adminApi,
+  /** Platform-wide analytics — same data source as overview. */
+  analytics: adminApi.overview,
+};
+
+/* =========================
+   TRANSFERS API
+========================= */
+
+export const transfersApi = {
+  send: (data: {
+    title: string;
+    fileIds?: string[];
+    fileKeys?: string[];
+    /** fileId → relativePath for locally-uploaded files from dragged folders */
+    relativePaths?: Record<string, string>;
+    method: "email" | "link" | "qr";
+    privacy?: "public" | "private" | "specific";
+    recipients?: string[];
+    subject?: string;
+    message?: string;
+    expiry?: number;
+    password?: string;
+    totalSize?: number;
+    fileCount?: number;
+    folderCount?: number;
+  }) => getApi().post("/transfers/send", data),
+
+  list: (params?: Record<string, unknown>) =>
+    getApi().get("/transfers", { params }),
+
+  getById: (id: string) => getApi().get(`/transfers/${id}`),
+
+  getStats: () => getApi().get("/transfers/stats"),
+
+  received: (params?: Record<string, unknown>) =>
+    getApi().get("/transfers/received", { params }),
+
+  starred: (params?: Record<string, unknown>) =>
+    getApi().get("/transfers/starred", { params }),
+
+  disable: (id: string) => getApi().patch(`/transfers/${id}/disable`),
+
+  enable: (id: string) => getApi().patch(`/transfers/${id}/enable`),
+
+  extend: (id: string, days = 7) =>
+    getApi().patch(`/transfers/${id}/extend`, null, { params: { days } }),
+
+  star: (id: string) => getApi().post(`/transfers/${id}/star`),
+
+  unstar: (id: string) => getApi().delete(`/transfers/${id}/star`),
+
+  delete: (id: string) => getApi().delete(`/transfers/${id}`),
+
+  adminAll: (params?: Record<string, unknown>) =>
+    getApi().get("/transfers/admin/all", { params }),
+
+  adminStats: () => getApi().get("/transfers/admin/stats"),
 };
 
 /* =========================
@@ -361,17 +804,22 @@ export const adminApi = {
 ========================= */
 
 export const dashboardApi = {
-  getStats: () => getApi().get("/dashboard/stats"),
+  /** Transfer stats — works for all authenticated users. */
+  getStats: () => getApi().get("/transfers/stats"),
+
+  /** Recent activity — pulls from the transactions log. */
   getRecentActivity: (limit?: number) =>
-    getApi().get("/dashboard/recent-activity", { params: { limit } }),
-  getStorageAnalytics: () => getApi().get("/dashboard/storage"),
+    getApi().get("/transactions", { params: { limit } }),
+
+  /** Storage — admin/superadmin: team storage; regular user: own profile (has storageUsed). */
+  getStorageAnalytics: () => getApi().get("/admin/storage"),
 };
 
 /* =========================
    EXPORT ALL
 ========================= */
 
-export default {
+const apiClient = {
   auth: authApi,
   users: usersApi,
   files: filesApi,
@@ -380,6 +828,12 @@ export default {
   search: searchApi,
   notifications: notificationsApi,
   transactions: transactionsApi,
+  transfers: transfersApi,
+  shares: sharesApi,
+  links: linksApi,
   admin: adminApi,
+  superadmin: superadminApi,
   dashboard: dashboardApi,
 };
+
+export default apiClient;

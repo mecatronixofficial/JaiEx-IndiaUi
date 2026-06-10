@@ -1,9 +1,10 @@
-import jai_logo from "../../public/logo/jai-logo.png";
+import type { StaticImageData } from 'next/image';
+import jai_logo from '../../public/logo/jai-logo.png';
 
-const Img_Helper = {
+const ImgHelper: Record<string, Record<string, StaticImageData>> = {
   logo: {
     jai_logo,
   },
 };
 
-export default Img_Helper;
+export default ImgHelper;

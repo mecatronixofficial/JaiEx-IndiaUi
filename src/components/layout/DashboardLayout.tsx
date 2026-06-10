@@ -1,114 +1,163 @@
-'use client';
+"use client";
 
 import {
-  useState,
-  useEffect,
+  type ReactNode,
+  createContext,
   useCallback,
-} from 'react';
+  useContext,
+  useEffect,
+  useState,
+} from "react";
 
-import Sidebar from './Sidebar';
-import Header from './Header';
+import Sidebar from "./Sidebar";
+import Header from "./Header";
+import { usersApi } from "@/lib/api";
+import { useAuth } from "@/contexts/AuthContext";
+import UploadModal from "@/components/modals/UploadModal";
 
-import { usersApi } from '@/lib/api';
-import { useAuth } from '@/contexts/AuthContext';
+/* =========================
+   STORAGE CONTEXT
+   Exposed so child pages can call refreshStorage() after any
+   operation that changes the user's storage (upload, delete, etc.)
+========================= */
 
-import UploadModal from '@/components/modals/UploadModal';
+interface StorageContextValue {
+  storageUsed: number;
+  storageQuota: number;
+  storageLoading: boolean;
+  refreshStorage: () => void;
+}
+
+const StorageContext = createContext<StorageContextValue | null>(null);
+
+export function useStorage(): StorageContextValue {
+  const ctx = useContext(StorageContext);
+  if (!ctx) throw new Error("useStorage must be used inside <DashboardLayout>");
+  return ctx;
+}
+
+/* =========================
+   CONSTANTS
+========================= */
+
+const DEFAULT_QUOTA = 10_737_418_240; // 10 GiB
+
+/* =========================
+   LAYOUT
+========================= */
 
 export default function DashboardLayout({
   children,
 }: {
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   const { user } = useAuth();
 
-  const [storageUsed, setStorageUsed] =
-    useState(0);
+  const [storageUsed, setStorageUsed]             = useState(0);
+  const [storageQuota, setStorageQuota]           = useState(DEFAULT_QUOTA);
+  const [storageLoading, setStorageLoading]       = useState(true);
+  const [showUpload, setShowUpload]               = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [refreshSeq, setRefreshSeq]               = useState(0);
 
-  const [storageQuota, setStorageQuota] =
-    useState(10737418240);
+  /* refreshStorage just increments a counter; the effect below does the work.
+     This keeps it a plain () => void so the React Compiler doesn't flag it as
+     "calling setState within an effect" at the call site. */
+  const refreshStorage = useCallback(() => setRefreshSeq((n) => n + 1), []);
 
-  const [showUpload, setShowUpload] =
-    useState(false);
-
-  /* =========================
-     LOAD STORAGE
-  ========================= */
-
-  const loadStorage = useCallback(
-    async () => {
-      if (!user?._id) return;
-
-      try {
-        const res =
-          await usersApi.getStorage(
-            user._id,
-          );
-
-        const storage =
-          res.data?.storage ||
-          res.data;
-
-        setStorageUsed(
-          storage?.used || 0,
-        );
-
-        setStorageQuota(
-          storage?.quota ||
-            10737418240,
-        );
-      } catch {
-        // silent
-      }
-    },
-    [user?._id],
-  );
-
-  /* =========================
-     EFFECT
-  ========================= */
-
+  /* ── Storage fetch ──
+     The local async function lets the React Compiler trace that every
+     setState call happens only after an `await`, satisfying its rule about
+     not calling setState synchronously within an effect.
+  ── */
   useEffect(() => {
-    loadStorage();
-  }, [loadStorage]);
+    if (!user?.id) return; // AuthGuard guarantees user is present on dashboard routes
 
-  /* =========================
-     UI
-  ========================= */
+    let alive = true;
+
+    async function fetchStorage() {
+      try {
+        const res = await usersApi.getStorage(user!.id);
+        if (!alive) return;
+        // Backend returns { success, data: { usedBytes, quotaBytes } }
+        const s = res.data?.data ?? res.data;
+        setStorageUsed(s?.usedBytes ?? s?.used ?? 0);
+        setStorageQuota(s?.quotaBytes ?? s?.quota ?? DEFAULT_QUOTA);
+      } catch {
+        // silent — layout should never crash over storage
+      } finally {
+        if (alive) setStorageLoading(false);
+      }
+    }
+
+    fetchStorage();
+    return () => { alive = false; };
+  }, [user, refreshSeq]);
+
+  /* ── Mobile sidebar: close on Escape ── */
+  useEffect(() => {
+    if (!mobileSidebarOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMobileSidebarOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [mobileSidebarOpen]);
+
+  /* ── Mobile sidebar: lock body scroll while open ── */
+  useEffect(() => {
+    if (!mobileSidebarOpen) return;
+    const orig = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = orig;
+    };
+  }, [mobileSidebarOpen]);
 
   return (
-    <div className="flex min-h-screen bg-[var(--bg)]">
+    <StorageContext.Provider
+      value={{ storageUsed, storageQuota, storageLoading, refreshStorage }}
+    >
+      <div className="flex min-h-screen bg-(--bg)">
 
-      {/* Sidebar */}
-      <Sidebar
-        storageUsed={storageUsed}
-        storageQuota={storageQuota}
-        onUpload={() =>
-          setShowUpload(true)
-        }
-      />
+        {/* ── Mobile overlay (closes sidebar on backdrop click) ── */}
+        {mobileSidebarOpen && (
+          <div
+            className="fixed inset-0 z-30 bg-black/50 backdrop-blur-sm lg:hidden animate-in fade-in duration-200"
+            aria-hidden="true"
+            onClick={() => setMobileSidebarOpen(false)}
+          />
+        )}
 
-      {/* Main Content */}
-      <div className="flex flex-1 flex-col min-w-0">
+        <Sidebar
+          storageUsed={storageUsed}
+          storageQuota={storageQuota}
+          storageLoading={storageLoading}
+          onUpload={() => setShowUpload(true)}
+          mobileOpen={mobileSidebarOpen}
+          onMobileClose={() => setMobileSidebarOpen(false)}
+        />
 
-        {/* Header */}
-        <Header />
+        <div className="flex min-w-0 flex-1 flex-col">
+          <Header
+            onMobileSidebarOpen={() => setMobileSidebarOpen(true)}
+            onUpload={() => setShowUpload(true)}
+            storageUsed={storageUsed}
+            storageQuota={storageQuota}
+            storageLoading={storageLoading}
+          />
+          <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-7">
+            {children}
+          </main>
+        </div>
 
-        {/* Page Content */}
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-7">
-          {children}
-        </main>
+        <UploadModal
+          open={showUpload}
+          onClose={() => setShowUpload(false)}
+          onUploadComplete={refreshStorage}
+          transferMode
+        />
       </div>
-
-      {/* Upload Modal */}
-      <UploadModal
-        open={showUpload}
-        onClose={() =>
-          setShowUpload(false)
-        }
-        onUploadComplete={
-          loadStorage
-        }
-      />
-    </div>
+    </StorageContext.Provider>
   );
 }
