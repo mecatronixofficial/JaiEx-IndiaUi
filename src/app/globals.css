@@ -28,6 +28,7 @@
 
     /* Text */
     --text: #171717;
+    --text-primary: #171717;
     --text-muted: #737373;
     --text-dim: #a3a3a3;
 
@@ -35,6 +36,7 @@
     --accent: #f97316;
     --accent-2: #fb923c;
     --accent-hover: #ea580c;
+    --accent-glow: rgba(249, 115, 22, 0.08);
 
     /* Status */
     --green: #10b981;
@@ -55,12 +57,14 @@
     --border-hover: #3a3a3a;
 
     --text: #fafafa;
+    --text-primary: #fafafa;
     --text-muted: #a3a3a3;
     --text-dim: #737373;
 
     --accent: #f97316;
     --accent-2: #fb923c;
     --accent-hover: #fdba74;
+    --accent-glow: rgba(249, 115, 22, 0.12);
   }
 
   * {
@@ -90,32 +94,6 @@
   h6 {
     font-family: 'Poppins', sans-serif;
   }
-}
-
-.custom-scrollbar::-webkit-scrollbar {
-  width: 6px;
-}
-
-.custom-scrollbar::-webkit-scrollbar-track {
-  background: #f1f1f1;
-  border-radius: 10px;
-}
-
-.custom-scrollbar::-webkit-scrollbar-thumb {
-  background: #c1c1c1;
-  border-radius: 10px;
-}
-
-.custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: #a8a8a8;
-}
-
-.dark .custom-scrollbar::-webkit-scrollbar-track {
-  background: #1f2937;
-}
-
-.dark .custom-scrollbar::-webkit-scrollbar-thumb {
-  background: #4b5563;
 }
 
 /* =========================================
@@ -208,6 +186,88 @@
   .gradient-text {
     @apply bg-gradient-to-r from-orange-500 to-orange-600 bg-clip-text text-transparent;
   }
+
+  /* SKELETON */
+
+  .skeleton {
+    @apply rounded-2xl bg-gray-100 dark:bg-zinc-800;
+    animation: skeleton-pulse 1.6s ease-in-out infinite;
+  }
+
+  /* DATA TABLE */
+
+  .data-table {
+    @apply w-full border-collapse text-sm;
+  }
+
+  .data-table thead tr {
+    @apply border-b border-(--border) bg-(--bg-2);
+  }
+
+  .data-table th {
+    @apply px-4 py-3.5 text-left text-xs font-semibold uppercase tracking-wide text-(--text-muted);
+  }
+
+  .data-table tbody tr {
+    @apply border-b border-(--border) transition-colors hover:bg-(--bg-2);
+  }
+
+  .data-table tbody tr:last-child {
+    @apply border-b-0;
+  }
+
+  .data-table td {
+    @apply px-4 py-3.5;
+  }
+
+  /* FEATURE CARD */
+
+  .feature-card {
+    transition: transform 0.22s ease, box-shadow 0.22s ease, border-color 0.22s ease;
+  }
+
+  .feature-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 20px 48px rgba(249, 115, 22, 0.13), 0 4px 16px rgba(0, 0, 0, 0.06);
+    border-color: rgba(249, 115, 22, 0.35);
+  }
+
+  .feature-card:hover .feat-icon {
+    animation: float-y 1.8s ease-in-out infinite;
+  }
+
+  /* CTA PILL */
+
+  .cta-pill {
+    transition: transform 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+  }
+
+  .cta-pill:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 30px rgba(249, 115, 22, 0.45);
+    background-color: #ea580c;
+  }
+
+  /* NAV LINK */
+
+  .nav-link {
+    position: relative;
+  }
+
+  .nav-link::after {
+    content: '';
+    position: absolute;
+    bottom: -2px;
+    left: 0;
+    width: 0;
+    height: 1.5px;
+    background: #f97316;
+    transition: width 0.25s ease;
+  }
+
+  .nav-link:hover::after {
+    width: 100%;
+  }
 }
 
 /* =========================================
@@ -215,6 +275,9 @@
 ========================================= */
 
 @layer utilities {
+  .animate-fade-in {
+    animation: fade-in 0.3s ease-out both;
+  }
   .scrollbar-custom {
     scrollbar-width: thin;
     scrollbar-color: var(--accent) var(--bg-2);
@@ -241,4 +304,181 @@
   .scrollbar-hide::-webkit-scrollbar {
     display: none;
   }
+
+  /* HERO ANIMATIONS */
+
+  .hero-item {
+    opacity: 0;
+    animation: hero-up 0.65s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  }
+
+  .hero-item:nth-child(2) { animation-delay: 0.15s; }
+  .hero-item:nth-child(3) { animation-delay: 0.28s; }
+  .hero-item:nth-child(4) { animation-delay: 0.40s; }
+  .hero-item:nth-child(5) { animation-delay: 0.52s; }
+
+  .hero-badge {
+    opacity: 0;
+    animation: badge-pop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) 0.05s forwards;
+  }
+
+  .sec-badge {
+    animation: float-y 3s ease-in-out infinite;
+  }
+
+  .dot-live {
+    animation: dot-pulse 2s ease-in-out infinite;
+  }
+
+  /* REVEAL ANIMATIONS */
+
+  [data-reveal] {
+    opacity: 0;
+    transform: translateY(28px);
+    transition: opacity 0.65s cubic-bezier(0.22, 1, 0.36, 1), transform 0.65s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  [data-reveal][data-visible="true"] {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  [data-reveal-cards] > * {
+    opacity: 0;
+    transform: translateY(24px);
+    transition: opacity 0.55s cubic-bezier(0.22, 1, 0.36, 1), transform 0.55s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  [data-reveal-cards][data-visible="true"] > *:nth-child(1) { opacity: 1; transform: translateY(0); transition-delay: 0s; }
+  [data-reveal-cards][data-visible="true"] > *:nth-child(2) { opacity: 1; transform: translateY(0); transition-delay: 0.07s; }
+  [data-reveal-cards][data-visible="true"] > *:nth-child(3) { opacity: 1; transform: translateY(0); transition-delay: 0.14s; }
+  [data-reveal-cards][data-visible="true"] > *:nth-child(4) { opacity: 1; transform: translateY(0); transition-delay: 0.21s; }
+  [data-reveal-cards][data-visible="true"] > *:nth-child(5) { opacity: 1; transform: translateY(0); transition-delay: 0.28s; }
+  [data-reveal-cards][data-visible="true"] > *:nth-child(6) { opacity: 1; transform: translateY(0); transition-delay: 0.35s; }
+}
+
+/* =========================================
+   LANDING PAGE
+========================================= */
+
+.hero-section {
+  background: radial-gradient(ellipse 80% 60% at 50% 0%, rgba(251, 146, 60, 0.18) 0%, transparent 70%), #ffffff;
+}
+
+.blob-orange {
+  background: radial-gradient(circle, rgba(249, 115, 22, 0.14) 0%, transparent 70%);
+  animation: blob-drift 14s ease-in-out infinite;
+}
+
+.blob-amber {
+  background: radial-gradient(circle, rgba(251, 191, 36, 0.16) 0%, transparent 70%);
+  animation: blob-drift 11s ease-in-out infinite reverse;
+  animation-delay: 2s;
+}
+
+.shimmer-text {
+  background-image: linear-gradient(90deg, #ea580c, #f97316, #fb923c, #fbbf24, #f97316, #ea580c);
+  background-size: 300% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer-text 3.5s linear infinite;
+}
+
+.security-gradient {
+  background: linear-gradient(135deg, #f97316 0%, #fb923c 45%, #fbbf24 100%);
+}
+
+.float-delayed {
+  animation: float-y 4s ease-in-out infinite;
+  animation-delay: 1s;
+}
+
+/* Dynamic progress / storage bar — width set via --bar-w CSS variable */
+.bar-fill {
+  width: var(--bar-w, 0%);
+}
+
+/* =========================================
+   SHARED GRID OVERLAYS
+========================================= */
+
+/* 36px grid — login panel, section backgrounds */
+.login-grid-overlay,
+.grid-overlay-sm {
+  background-image:
+    linear-gradient(to right, white 1px, transparent 1px),
+    linear-gradient(to bottom, white 1px, transparent 1px);
+  background-size: 36px 36px;
+}
+
+/* 40px grid — hero section */
+.grid-overlay-lg {
+  background-image:
+    linear-gradient(to right, white 1px, transparent 1px),
+    linear-gradient(to bottom, white 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+.login-right-bg {
+  background-color: #f9fafb;
+  background-image:
+    radial-gradient(circle at 60% 20%, rgba(249, 115, 22, 0.04) 0%, transparent 55%),
+    radial-gradient(#e5e7eb 1px, transparent 1px);
+  background-size: 100% 100%, 24px 24px;
+}
+
+/* =========================================
+   KEYFRAMES
+========================================= */
+
+@keyframes blob-drift {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(30px, -25px) scale(1.06); }
+  66% { transform: translate(-15px, 18px) scale(0.96); }
+}
+
+@keyframes ticker {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+@keyframes hero-up {
+  from { opacity: 0; transform: translateY(30px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes badge-pop {
+  0% { opacity: 0; transform: scale(0.85) translateY(8px); }
+  100% { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+@keyframes float-y {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-8px); }
+}
+
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes shimmer-text {
+  0% { background-position: 0% center; }
+  100% { background-position: 200% center; }
+}
+
+@keyframes dot-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.8); }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.5; }
 }

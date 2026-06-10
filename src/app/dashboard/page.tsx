@@ -1,448 +1,1662 @@
 "use client";
 
-import { useState, useEffect } from "react";
-
-import Link from "next/link";
-
 import {
-  Files,
-  Upload,
-  Download,
-  Share2,
-  ArrowUpRight,
-  HardDrive,
-  Trash2,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
+import Link from "next/link";
+import {
+  AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer,
+} from "recharts";
+import {
+  Activity, ArrowUpRight, BarChart3, Bell, Check, CheckCircle,
+  Clock, Copy, Crown, Download, Eye, File, Folder, HardDrive,
+  Inbox, Link as LinkIcon, RefreshCw, Send, Shield, Star,
+  TrendingDown, TrendingUp, Upload, Users, XCircle, Zap,
 } from "lucide-react";
-
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import AuthGuard from "@/components/auth/AuthGuard";
-
-import { filesApi, usersApi, transactionsApi } from "@/lib/api";
-
-import { FileItem, Transaction } from "@/types";
-
-import { formatBytes, formatRelative, getFileIcon } from "@/lib/utils";
-
 import { useAuth } from "@/contexts/AuthContext";
-
-import { Badge } from "@/components/ui";
+import { cn, formatBytes, formatRelative, truncate } from "@/lib/utils";
 import Card from "@/components/ui/Card";
+import Button from "@/components/ui/Button";
+import { Avatar, Spinner } from "@/components/ui";
+import FileTypeIcon from "@/components/ui/FileTypeIcon";
+import {
+  adminApi, filesApi, foldersApi, linksApi, notificationsApi,
+  transactionsApi, transfersApi, uploadApi, usersApi,
+} from "@/lib/api";
+import { handleApiError } from "@/lib/error-handler";
 
-interface Stats {
-  totalFiles: number;
-  storageUsed: number;
-  storageQuota: number;
-  sharedFiles: number;
+/* ─── Week chart helpers ─── */
+function last7Labels(): string[] {
+  return [...Array(7)].map((_, i) => {
+    const d = new Date();
+    d.setDate(d.getDate() - (6 - i));
+    return d.toLocaleDateString("en", { weekday: "short" });
+  });
 }
 
-export default function DashboardPage() {
-  const { user } = useAuth();
+function groupByDay(items: any[]): Record<string, number> {
+  const map: Record<string, number> = {};
+  items.forEach((item) => {
+    try {
+      const d   = new Date(item.createdAt ?? item.time ?? item.date ?? "");
+      const key = d.toLocaleDateString("en", { weekday: "short" });
+      map[key]  = (map[key] ?? 0) + 1;
+    } catch { /* skip */ }
+  });
+  return map;
+}
 
-  const [stats, setStats] = useState<Stats>({
-    totalFiles: 0,
-    storageUsed: 0,
-    storageQuota: 10737418240,
-    sharedFiles: 0,
+function toWeekSeries(map: Record<string, number>, key: string) {
+  return last7Labels().map((day) => ({ day, [key]: map[day] ?? 0 }));
+}
+
+type StorageRecord = Record<string, unknown> & {
+  storage?: StorageRecord;
+  summary?: StorageRecord;
+};
+
+function asStorageRecord(data: unknown): StorageRecord {
+  return data && typeof data === "object" ? (data as StorageRecord) : {};
+}
+
+function readStorageUsed(data: unknown): number {
+  const item = asStorageRecord(data);
+  const storage = asStorageRecord(item.storage);
+  const summary = asStorageRecord(item.summary);
+
+  return (
+    Number(item.usedBytes ?? storage.usedBytes ?? summary.totalUsedBytes ??
+      summary.totalSizeBytes ?? item.totalUsedBytes ?? item.totalSizeBytes ??
+      item.used ?? item.totalUsed ?? item.storageUsed) ||
+    0
+  );
+}
+
+function readStorageQuota(data: unknown): number {
+  const item = asStorageRecord(data);
+  const storage = asStorageRecord(item.storage);
+  const summary = asStorageRecord(item.summary);
+
+  return (
+    Number(item.quotaBytes ?? storage.quotaBytes ?? summary.totalQuotaBytes ??
+      item.totalQuotaBytes ?? item.quota ?? item.totalQuota ?? item.storageQuota) ||
+    0
+  );
+}
+
+/* ─── Status badge ─── */
+function StatusBadge({ status }: { status: string }) {
+  const map: Record<string, { label: string; cls: string }> = {
+    active:    { label: "Active",    cls: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" },
+    expired:   { label: "Expired",   cls: "bg-gray-100 text-gray-500 dark:bg-zinc-800 dark:text-gray-400" },
+    disabled:  { label: "Disabled",  cls: "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400" },
+    pending:   { label: "Pending",   cls: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-500" },
+    delivered: { label: "Delivered", cls: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400" },
+    opened:    { label: "Opened",    cls: "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400" },
+    completed: { label: "Completed", cls: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" },
+    uploading: { label: "Uploading", cls: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400" },
+    failed:    { label: "Failed",    cls: "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400" },
+  };
+  const s = map[status?.toLowerCase()] ?? map.pending;
+  return (
+    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ${s.cls}`}>
+      {s.label}
+    </span>
+  );
+}
+
+/* ─── Activity icon map ─── */
+const ACTIVITY_ICONS: Record<string, ReactNode> = {
+  upload:   <Upload   size={12} className="text-emerald-500" />,
+  download: <Download size={12} className="text-blue-500"   />,
+  share:    <Send     size={12} className="text-orange-500" />,
+  delete:   <XCircle  size={12} className="text-red-400"    />,
+  login:    <Shield   size={12} className="text-purple-500" />,
+  view:     <Eye      size={12} className="text-gray-400"   />,
+  create:   <File     size={12} className="text-teal-500"   />,
+};
+
+function activityIcon(action?: string) {
+  if (!action) return <Activity size={12} className="text-gray-400" />;
+  const key = Object.keys(ACTIVITY_ICONS).find((k) =>
+    action.toLowerCase().includes(k),
+  );
+  return key ? ACTIVITY_ICONS[key] : <Activity size={12} className="text-gray-400" />;
+}
+
+/* ─── Stat card ─── */
+function StatCard({
+  icon, label, value, sub, trend, from, to, href, loading,
+}: {
+  icon: ReactNode; label: string; value: string | number;
+  sub?: string; trend?: number; from: string; to: string;
+  href?: string; loading?: boolean;
+}) {
+  const inner = (
+    <div className={cn(
+      "group relative overflow-hidden rounded-2xl border border-gray-200/60 bg-white p-5 shadow-sm",
+      "transition-all duration-300 hover:-translate-y-0.5 hover:shadow-lg",
+      "dark:border-zinc-800 dark:bg-zinc-900",
+      href && "cursor-pointer",
+    )}>
+      <div className={`absolute right-0 top-0 h-full w-1 rounded-r-2xl bg-linear-to-b ${from} ${to} opacity-25 transition-opacity group-hover:opacity-70`} />
+      <div className={`mb-3 flex h-11 w-11 items-center justify-center rounded-xl bg-linear-to-br ${from} ${to} text-white shadow-md`}>
+        {icon}
+      </div>
+      <p className="text-xs font-medium text-gray-500 dark:text-gray-400">{label}</p>
+      {loading ? (
+        <div className="mt-1 h-7 w-20 animate-pulse rounded-lg bg-gray-200 dark:bg-zinc-800" />
+      ) : (
+        <h3 className="mt-0.5 text-2xl font-bold text-gray-900 dark:text-white">{value}</h3>
+      )}
+      {(sub || trend !== undefined) && !loading && (
+        <div className="mt-1.5 flex items-center gap-2">
+          {sub && <span className="text-xs text-gray-500 dark:text-gray-400">{sub}</span>}
+          {trend !== undefined && (
+            <span className={`flex items-center gap-0.5 text-xs font-semibold ${trend >= 0 ? "text-emerald-600" : "text-red-500"}`}>
+              {trend >= 0 ? <TrendingUp size={11} /> : <TrendingDown size={11} />}
+              {Math.abs(trend)}%
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+  return href ? <Link href={href}>{inner}</Link> : inner;
+}
+
+/* ─── Quick action tile ─── */
+function QuickAction({ icon, label, href, color, badge }: {
+  icon: ReactNode; label: string; href: string; color: string; badge?: number;
+}) {
+  return (
+    <Link
+      href={href}
+      className="relative flex flex-col items-center gap-2 rounded-2xl border-2 border-dashed border-gray-200 bg-gray-50/60 p-4 text-center transition-all hover:border-orange-400 hover:bg-orange-50/60 dark:border-zinc-700 dark:bg-zinc-900/60 dark:hover:border-orange-500/60 dark:hover:bg-orange-900/10"
+    >
+      <div className={`flex h-10 w-10 items-center justify-center rounded-xl ${color} text-white shadow-sm`}>
+        {icon}
+      </div>
+      <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">{label}</span>
+      {badge !== undefined && badge > 0 && (
+        <span className="absolute right-2 top-2 flex h-5 min-w-5 items-center justify-center rounded-full bg-orange-500 px-1 text-[10px] font-bold text-white">
+          {badge > 99 ? "99+" : badge}
+        </span>
+      )}
+    </Link>
+  );
+}
+
+/* ─── Storage bar (scaleX avoids inline-width linter flag) ─── */
+function StorageBar({ used, quota, loading }: { used: number; quota: number; loading: boolean }) {
+  const pct   = quota > 0 ? Math.min((used / quota) * 100, 100) : 0;
+  const color = pct > 90
+    ? "from-red-500 to-rose-400"
+    : pct > 70
+    ? "from-amber-500 to-yellow-400"
+    : "from-orange-500 to-amber-400";
+
+  if (loading) return <div className="h-3 animate-pulse rounded-full bg-gray-200 dark:bg-zinc-800" />;
+
+  return (
+    <>
+      <div className="mb-2 flex justify-between text-sm">
+        <span className="font-semibold text-gray-900 dark:text-white">{formatBytes(used)}</span>
+        <span className="text-gray-500">{quota > 0 ? `of ${formatBytes(quota)}` : "No quota set"}</span>
+      </div>
+      <div className="h-2.5 overflow-hidden rounded-full bg-gray-200 dark:bg-zinc-800">
+        <div
+          className={`h-full origin-left rounded-full bg-linear-to-r ${color} transition-all duration-700`}
+          style={{ transform: `scaleX(${pct / 100})` }}
+        />
+      </div>
+      <div className="mt-1.5 flex items-center justify-between text-xs text-gray-500">
+        <span>{pct.toFixed(1)}% used</span>
+        {quota > 0 && (
+          <span className="text-emerald-600 dark:text-emerald-400">{formatBytes(quota - used)} free</span>
+        )}
+      </div>
+    </>
+  );
+}
+
+/* ─── Chart tooltip ─── */
+function ChartTip({ active, payload, label, formatter }: any) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="rounded-xl border border-gray-200 bg-white/95 px-3 py-2 shadow-xl backdrop-blur-xl dark:border-zinc-700 dark:bg-zinc-900/95">
+      <p className="mb-1 text-xs font-semibold text-gray-500 dark:text-gray-400">{label}</p>
+      {payload.map((p: any) => (
+        <p key={p.dataKey} className="text-sm font-bold" style={{ color: p.color }}>
+          {p.name}: {formatter ? formatter(p.value) : p.value?.toLocaleString()}
+        </p>
+      ))}
+    </div>
+  );
+}
+
+/* ─── Section header ─── */
+function SectionHead({ title, sub, href, linkLabel = "View all", icon }: {
+  title: string; sub?: string; href?: string; linkLabel?: string; icon?: ReactNode;
+}) {
+  return (
+    <div className="flex items-center justify-between border-b border-gray-200/70 px-6 py-4 dark:border-zinc-800">
+      <div className="flex items-center gap-2">
+        {icon}
+        <div>
+          <h2 className="font-semibold text-gray-900 dark:text-white">{title}</h2>
+          {sub && <p className="text-xs text-gray-500">{sub}</p>}
+        </div>
+      </div>
+      {href && (
+        <Link href={href} className="flex items-center gap-1 text-sm font-medium text-orange-500 hover:text-orange-600">
+          {linkLabel} <ArrowUpRight size={13} />
+        </Link>
+      )}
+    </div>
+  );
+}
+
+/* ─── Activity item ─── */
+function ActivityItem({ item, i }: { item: any; i: number }) {
+  return (
+    <div className="flex items-start gap-3 px-5 py-3">
+      <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-gray-100 dark:bg-zinc-800">
+        {activityIcon(item.action ?? item.type ?? item.description)}
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="text-xs text-gray-700 dark:text-gray-300">
+          {item.description ?? item.action ?? item.message ?? "Action"}
+        </p>
+        <p className="mt-0.5 text-[11px] text-gray-400">
+          {formatRelative(item.time ?? item.createdAt)}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/* ─── Notification item ─── */
+function NotificationItem({ n }: { n: any }) {
+  const unread = !n.isRead;
+  return (
+    <div className={cn(
+      "flex items-start gap-3 px-5 py-3 transition-colors",
+      unread && "bg-orange-50/40 dark:bg-orange-900/5",
+    )}>
+      <div className={cn(
+        "mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg",
+        unread ? "bg-orange-100 dark:bg-orange-900/20" : "bg-gray-100 dark:bg-zinc-800",
+      )}>
+        <Bell size={12} className={unread ? "text-orange-500" : "text-gray-400"} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="text-xs font-medium text-gray-800 dark:text-gray-200">
+          {n.title ?? n.message ?? "Notification"}
+        </p>
+        {n.body && <p className="mt-0.5 truncate text-[11px] text-gray-500">{n.body}</p>}
+        <p className="mt-0.5 text-[11px] text-gray-400">{formatRelative(n.createdAt)}</p>
+      </div>
+      {unread && <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-orange-500" />}
+    </div>
+  );
+}
+
+/* ─── Compact file row ─── */
+function RecentFileRow({ file }: { file: any }) {
+  return (
+    <Link
+      href="/files"
+      className="flex items-center gap-3 rounded-xl px-3 py-2.5 transition-colors hover:bg-gray-50 dark:hover:bg-zinc-800/60"
+    >
+      <FileTypeIcon
+        mime={file.mimeType}
+        ext={file.extension ?? file.name?.split(".").pop()}
+        size={32}
+      />
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-medium text-gray-900 dark:text-white">
+          {truncate(file.originalName ?? file.name ?? "File", 32)}
+        </p>
+        <p className="mt-0.5 text-[11px] text-gray-500">
+          {formatBytes(file.size ?? 0)} · {formatRelative(file.createdAt)}
+        </p>
+      </div>
+      <span className="shrink-0 rounded-md bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-gray-500 dark:bg-zinc-800 dark:text-gray-400">
+        {(file.extension ?? file.mimeType?.split("/")[1] ?? "—").slice(0, 6)}
+      </span>
+    </Link>
+  );
+}
+
+/* ══════════════════════════════════════════
+   USER DASHBOARD
+══════════════════════════════════════════ */
+function UserDashboard({ name, user }: { name: string; user: any }) {
+  const [loading, setLoading]                 = useState(true);
+  const [refreshing, setRefreshing]           = useState(false);
+  const [copied, setCopied]                   = useState(false);
+  const [stats, setStats]                     = useState({
+    totalTransfers: 0, activeLinks: 0, totalDownloads: 0,
+    receivedMails: 0, totalFiles: 0, starred: 0,
+  });
+  const [storage, setStorage]                 = useState({ used: 0, quota: 0 });
+  const [recentFiles, setRecentFiles]         = useState<any[]>([]);
+  const [folderCount, setFolderCount]         = useState(0);
+  const [recentTransfers, setRecentTransfers] = useState<any[]>([]);
+  const [received, setReceived]               = useState<any[]>([]);
+  const [activity, setActivity]               = useState<any[]>([]);
+  const [lastLink, setLastLink]               = useState<any>(null);
+  const [weekSeries, setWeekSeries]           = useState<any[]>([]);
+  const [notifications, setNotifications]     = useState<any[]>([]);
+  const [unreadCount, setUnreadCount]         = useState(0);
+  const [uploadSessions, setUploadSessions]   = useState<any[]>([]);
+
+  const load = useCallback(async (silent = false) => {
+    try {
+      if (silent) setRefreshing(true); else setLoading(true);
+
+      const [
+        statsRes, actRes, storRes, txRes, recRes, linksRes,
+        filesRes, foldersRes, unreadRes, notifsRes, uploadsRes,
+      ] = await Promise.allSettled([
+        transfersApi.getStats(),
+        transactionsApi.list({ limit: 20 }),
+        usersApi.myStorage(),
+        transfersApi.list({ limit: 5 }),
+        transfersApi.received({ limit: 3 }),
+        linksApi.list({ status: "active", limit: 1 }),
+        filesApi.list({ limit: 6, page: 1 }),
+        foldersApi.list(),
+        notificationsApi.unreadCount(),
+        notificationsApi.list({ limit: 5 }),
+        uploadApi.getSessions({ limit: 4 }),
+      ]);
+
+      if (statsRes.status === "fulfilled") {
+        const d = statsRes.value.data?.data ?? statsRes.value.data ?? {};
+        setStats({
+          totalTransfers: d.totalTransfers ?? d.sent      ?? d.transfers ?? 0,
+          activeLinks:    d.activeLinks    ?? d.links     ?? 0,
+          totalDownloads: d.totalDownloads ?? d.downloads ?? 0,
+          receivedMails:  d.receivedMails  ?? d.received  ?? 0,
+          totalFiles:     d.totalFiles     ?? d.files     ?? 0,
+          starred:        d.starred        ?? d.starredCount ?? 0,
+        });
+      }
+
+      if (storRes.status === "fulfilled") {
+        const d = storRes.value.data?.data ?? storRes.value.data ?? {};
+        setStorage({
+          used:  readStorageUsed(d),
+          quota: readStorageQuota(d),
+        });
+      }
+
+      if (actRes.status === "fulfilled") {
+        const inner = actRes.value.data?.data ?? actRes.value.data;
+        const list  = Array.isArray(inner)
+          ? inner
+          : (inner?.transactions ?? inner?.activity ?? inner?.items ?? []);
+        const arr = Array.isArray(list) ? list : [];
+        setActivity(arr.slice(0, 6));
+        setWeekSeries(toWeekSeries(groupByDay(arr), "transfers"));
+      }
+
+      if (txRes.status === "fulfilled") {
+        const inner = txRes.value.data?.data ?? txRes.value.data;
+        const list  = inner?.transfers ?? (Array.isArray(inner) ? inner : []);
+        setRecentTransfers(Array.isArray(list) ? list : []);
+      }
+
+      if (recRes.status === "fulfilled") {
+        const inner = recRes.value.data?.data ?? recRes.value.data;
+        const list  = inner?.transfers ?? (Array.isArray(inner) ? inner : []);
+        setReceived(Array.isArray(list) ? list : []);
+      }
+
+      if (linksRes.status === "fulfilled") {
+        const inner = linksRes.value.data?.data ?? linksRes.value.data;
+        const list  = inner?.links ?? (Array.isArray(inner) ? inner : []);
+        setLastLink(Array.isArray(list) && list.length > 0 ? list[0] : null);
+      }
+
+      if (filesRes.status === "fulfilled") {
+        const inner = filesRes.value.data?.data ?? filesRes.value.data;
+        const list  = inner?.files ?? (Array.isArray(inner) ? inner : []);
+        setRecentFiles(Array.isArray(list) ? list.slice(0, 6) : []);
+        const total = inner?.total ?? inner?.pagination?.total ?? 0;
+        if (total > 0) setStats((p) => ({ ...p, totalFiles: total }));
+      }
+
+      if (foldersRes.status === "fulfilled") {
+        const inner = foldersRes.value.data?.data ?? foldersRes.value.data;
+        const list  = inner?.folders ?? (Array.isArray(inner) ? inner : []);
+        setFolderCount(
+          inner?.total ?? inner?.pagination?.total ?? (Array.isArray(list) ? list.length : 0),
+        );
+      }
+
+      if (unreadRes.status === "fulfilled") {
+        const d = unreadRes.value.data?.data ?? unreadRes.value.data ?? {};
+        setUnreadCount(d.count ?? d.unreadCount ?? d.unread ?? 0);
+      }
+
+      if (notifsRes.status === "fulfilled") {
+        const inner = notifsRes.value.data?.data ?? notifsRes.value.data;
+        const list  = inner?.notifications ?? (Array.isArray(inner) ? inner : []);
+        setNotifications(Array.isArray(list) ? list.slice(0, 5) : []);
+      }
+
+      if (uploadsRes.status === "fulfilled") {
+        const inner = uploadsRes.value.data?.data ?? uploadsRes.value.data;
+        const list  = inner?.sessions ?? (Array.isArray(inner) ? inner : []);
+        setUploadSessions(Array.isArray(list) ? list.slice(0, 4) : []);
+      }
+    } catch (err) {
+      handleApiError(err);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const storagePie = useMemo(() => {
+    const s = {
+      used:  storage.used  || readStorageUsed(user),
+      quota: storage.quota || readStorageQuota(user),
+    };
+    if (s.quota <= 0) return [];
+    return [
+      { name: "Used", value: Math.min(s.used, s.quota) },
+      { name: "Free", value: Math.max(s.quota - s.used, 0) },
+    ];
+  }, [storage, user]);
+
+  const storageInfo = {
+    used:  storage.used  || readStorageUsed(user),
+    quota: storage.quota || readStorageQuota(user),
+  };
+
+  const today = new Date().toLocaleDateString("en", {
+    weekday: "long", month: "long", day: "numeric",
   });
 
-  const [recentFiles, setRecentFiles] = useState<FileItem[]>([]);
+  const handleCopy = () => {
+    const url = lastLink?.url ?? lastLink?.shortUrl ?? "";
+    if (!url) return;
+    navigator.clipboard.writeText(url).catch(() => null);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
 
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  return (
+    <div className="space-y-7">
+      {/* ── Hero banner ── */}
+      <div className="relative overflow-hidden rounded-3xl bg-linear-to-br from-orange-500 via-orange-600 to-amber-600 p-8 shadow-xl shadow-orange-500/20">
+        <div className="pointer-events-none absolute inset-0 overflow-hidden opacity-10">
+          <div className="absolute -right-12 -top-12 h-60 w-60 rounded-full bg-white" />
+          <div className="absolute -bottom-10 -left-10 h-44 w-44 rounded-full bg-white" />
+          <div className="absolute right-36 top-10 h-24 w-24 rounded-full bg-white" />
+        </div>
+        <div className="relative flex flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-medium text-orange-100">{today}</p>
+            <h1 className="mt-1 text-3xl font-bold text-white">
+              Welcome back, <span className="text-orange-100">{name}</span>!
+            </h1>
+            <p className="mt-2 max-w-md text-sm text-orange-100/90">
+              {loading
+                ? "Loading your overview…"
+                : `${stats.totalFiles.toLocaleString()} files · ${folderCount.toLocaleString()} folders · ${unreadCount} notification${unreadCount !== 1 ? "s" : ""}`}
+            </p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <Link href="/transfers/send">
+                <Button size="sm" className="border-0 bg-white/20 text-white shadow-none backdrop-blur-sm hover:bg-white/30">
+                  <Send size={13} className="mr-1.5" /> New Transfer
+                </Button>
+              </Link>
+              <Link href="/files">
+                <Button size="sm" variant="ghost" className="border-white/30 text-white hover:bg-white/10">
+                  <File size={13} className="mr-1.5" /> My Files
+                </Button>
+              </Link>
+            </div>
+          </div>
+          {/* Mini storage widget in banner */}
+          <div className="w-full rounded-2xl bg-white/15 p-4 backdrop-blur-sm sm:w-56">
+            <div className="mb-3 flex items-center gap-2">
+              <HardDrive size={14} className="text-orange-100" />
+              <span className="text-sm font-semibold text-white">Storage</span>
+            </div>
+            {loading ? (
+              <div className="space-y-2">
+                <div className="h-2.5 animate-pulse rounded-full bg-white/20" />
+                <div className="h-3 w-3/4 animate-pulse rounded bg-white/20" />
+              </div>
+            ) : (
+              <>
+                <div className="h-2 overflow-hidden rounded-full bg-white/20">
+                  <div
+                    className="h-full origin-left rounded-full bg-white transition-all duration-700"
+                    style={{ transform: `scaleX(${storageInfo.quota > 0 ? Math.min(storageInfo.used / storageInfo.quota, 1) : 0})` }}
+                  />
+                </div>
+                <p className="mt-2 text-xs text-orange-100">
+                  {formatBytes(storageInfo.used)} of{" "}
+                  {storageInfo.quota > 0 ? formatBytes(storageInfo.quota) : "∞"} used
+                </p>
+                <Link href="/settings" className="mt-1.5 block text-[11px] text-orange-200 hover:text-white">
+                  Manage storage →
+                </Link>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
 
-  const [loading, setLoading] = useState(true);
+      {/* ── 8 stat cards ── */}
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <StatCard loading={loading} icon={<Send size={18} />}        label="Transfers Sent"  value={stats.totalTransfers.toLocaleString()}  sub="All time"       from="from-orange-500"  to="to-orange-600"  href="/transfers" />
+        <StatCard loading={loading} icon={<File size={18} />}        label="Files Stored"    value={stats.totalFiles.toLocaleString()}       sub="In cloud"       from="from-sky-500"     to="to-blue-600"    href="/files" />
+        <StatCard loading={loading} icon={<Folder size={18} />}      label="Folders"         value={folderCount.toLocaleString()}            sub="Organized"      from="from-amber-500"   to="to-yellow-500"  href="/folders" />
+        <StatCard loading={loading} icon={<CheckCircle size={18} />} label="Active Links"    value={stats.activeLinks.toLocaleString()}      sub="Live"           from="from-emerald-500" to="to-green-600"   href="/links" />
+        <StatCard loading={loading} icon={<Download size={18} />}    label="Downloads"       value={stats.totalDownloads.toLocaleString()}   sub="All time"       from="from-blue-500"    to="to-cyan-500"    href="/transfers" />
+        <StatCard loading={loading} icon={<Inbox size={18} />}       label="Received"        value={stats.receivedMails.toLocaleString()}    sub="For you"        from="from-purple-500"  to="to-violet-600"  href="/transfers/receive" />
+        <StatCard loading={loading} icon={<Star size={18} />}        label="Starred"         value={stats.starred.toLocaleString()}          sub="Favorites"      from="from-rose-500"    to="to-pink-500"    href="/starred" />
+        <StatCard loading={loading} icon={<Bell size={18} />}        label="Unread"          value={unreadCount.toLocaleString()}            sub="Notifications"  from="from-teal-500"    to="to-cyan-500"    href="/notifications" />
+      </div>
 
-  /* =========================
-     LOAD DATA
-  ========================= */
+      {/* ── Charts row ── */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_268px]">
+        <Card glass className="overflow-hidden">
+          <SectionHead
+            title="Activity This Week"
+            sub="7-day transfer & transaction activity"
+            icon={<BarChart3 size={15} className="text-orange-400" />}
+          />
+          <div className="px-2 pb-4 pt-5">
+            {loading ? (
+              <div className="flex h-44 items-center justify-center"><Spinner size={24} /></div>
+            ) : (
+              <ResponsiveContainer width="100%" height={176}>
+                <AreaChart data={weekSeries} margin={{ left: -20, right: 8 }}>
+                  <defs>
+                    <linearGradient id="uGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%"  stopColor="#f97316" stopOpacity={0.3} />
+                      <stop offset="95%" stopColor="#f97316" stopOpacity={0}   />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" strokeOpacity={0.5} />
+                  <XAxis dataKey="day" tick={{ fontSize: 11, fill: "#9ca3af" }} axisLine={false} tickLine={false} />
+                  <YAxis allowDecimals={false} tick={{ fontSize: 11, fill: "#9ca3af" }} axisLine={false} tickLine={false} />
+                  <Tooltip content={<ChartTip />} />
+                  <Area
+                    type="monotone" dataKey="transfers" name="Transfers"
+                    stroke="#f97316" strokeWidth={2.5} fill="url(#uGrad)"
+                    dot={{ r: 3, fill: "#f97316", strokeWidth: 0 }}
+                    activeDot={{ r: 5, fill: "#f97316" }}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        </Card>
 
-  useEffect(() => {
-    async function load() {
-      try {
-        const [filesRes, storageRes, txRes] = await Promise.allSettled([
-          filesApi.list({
-            limit: 8,
-            sort: "createdAt",
-            order: "desc",
-          }),
+        <Card glass className="p-6">
+          <div className="mb-4 flex items-center gap-2">
+            <HardDrive size={14} className="text-orange-500" />
+            <h3 className="font-semibold text-gray-900 dark:text-white">Storage Usage</h3>
+          </div>
+          {loading ? (
+            <div className="flex h-36 items-center justify-center"><Spinner size={24} /></div>
+          ) : (
+            <div className="flex flex-col items-center gap-4">
+              {storagePie.length > 0 && (
+                <ResponsiveContainer width="100%" height={130}>
+                  <PieChart>
+                    <Pie
+                      data={storagePie} cx="50%" cy="50%"
+                      innerRadius={38} outerRadius={56}
+                      startAngle={90} endAngle={-270}
+                      dataKey="value" paddingAngle={3}
+                    >
+                      <Cell fill="#f97316" />
+                      <Cell fill="#e5e7eb" />
+                    </Pie>
+                    <Tooltip content={<ChartTip formatter={formatBytes} />} />
+                  </PieChart>
+                </ResponsiveContainer>
+              )}
+              <div className="w-full">
+                <StorageBar used={storageInfo.used} quota={storageInfo.quota} loading={false} />
+              </div>
+            </div>
+          )}
+        </Card>
+      </div>
 
-          user?.id ? usersApi.getStorage(user.id) : Promise.resolve(null),
+      {/* ── Quick actions ── */}
+      <div>
+        <h2 className="mb-3 text-xs font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+          Quick Actions
+        </h2>
+        <div className="grid grid-cols-3 gap-3 sm:grid-cols-6">
+          <QuickAction icon={<Send size={18} />}     label="Send Files"    href="/transfers/send"          color="bg-orange-500" />
+          <QuickAction icon={<Upload size={18} />}   label="Upload Files"  href="/files?upload=1"          color="bg-teal-500"   />
+          <QuickAction icon={<File size={18} />}     label="My Files"      href="/files"                   color="bg-sky-500"    />
+          <QuickAction icon={<Folder size={18} />}   label="Folders"       href="/folders"                 color="bg-amber-500"  />
+          <QuickAction icon={<LinkIcon size={18} />} label="Create Link"   href="/transfers/send?tab=link" color="bg-purple-500" />
+          <QuickAction icon={<Bell size={18} />}     label="Notifications" href="/notifications"           color="bg-rose-500"   badge={unreadCount} />
+        </div>
+      </div>
 
-          transactionsApi.list({
-            limit: 5,
-          }),
+      {/* ── Main grid ── */}
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-[1fr_360px]">
+        {/* Left: Recent Files + Transfers */}
+        <div className="space-y-6">
+          <Card glass className="overflow-hidden">
+            <SectionHead
+              title="Recent Files"
+              sub="Latest uploads to your cloud storage"
+              href="/files"
+              icon={<File size={15} className="text-sky-500" />}
+            />
+            {loading ? (
+              <div className="flex items-center justify-center py-10"><Spinner size={24} /></div>
+            ) : recentFiles.length === 0 ? (
+              <div className="flex flex-col items-center gap-3 py-12 text-center">
+                <div className="flex h-14 w-14 items-center justify-center rounded-2xl border-2 border-dashed border-gray-200 dark:border-zinc-700">
+                  <File size={22} className="text-gray-300 dark:text-zinc-600" />
+                </div>
+                <p className="text-sm font-medium text-gray-500">No files yet</p>
+                <Link href="/files"><Button size="sm" variant="secondary">Upload Files</Button></Link>
+              </div>
+            ) : (
+              <div className="divide-y divide-gray-100/70 px-2 py-1 dark:divide-zinc-800/50">
+                {recentFiles.map((f) => <RecentFileRow key={f.id} file={f} />)}
+              </div>
+            )}
+          </Card>
+
+          <Card glass className="overflow-hidden">
+            <SectionHead
+              title="Recent Transfers"
+              href="/transfers"
+              icon={<Send size={15} className="text-orange-500" />}
+            />
+            {loading ? (
+              <div className="divide-y divide-gray-100 dark:divide-zinc-800/70">
+                {[...Array(3)].map((_, i) => (
+                  <div key={i} className="flex items-center gap-4 px-6 py-4">
+                    <div className="h-10 w-10 animate-pulse rounded-xl bg-gray-200 dark:bg-zinc-800" />
+                    <div className="flex-1 space-y-2">
+                      <div className="h-3.5 w-40 animate-pulse rounded bg-gray-200 dark:bg-zinc-800" />
+                      <div className="h-3 w-24 animate-pulse rounded bg-gray-100 dark:bg-zinc-800/60" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : recentTransfers.length === 0 ? (
+              <div className="flex flex-col items-center gap-3 py-12 text-center">
+                <div className="flex h-14 w-14 items-center justify-center rounded-2xl border-2 border-dashed border-gray-200 dark:border-zinc-700">
+                  <Send size={22} className="text-gray-300 dark:text-zinc-600" />
+                </div>
+                <p className="text-sm font-medium text-gray-500">No transfers yet</p>
+                <Link href="/transfers/send"><Button size="sm" variant="secondary">Send Files</Button></Link>
+              </div>
+            ) : (
+              <div className="divide-y divide-gray-100 dark:divide-zinc-800/70">
+                {recentTransfers.map((t) => (
+                  <Link
+                    key={t.id} href={`/transfers/${t.id}`}
+                    className="flex items-center gap-4 px-6 py-4 transition-colors hover:bg-orange-50/40 dark:hover:bg-orange-500/5"
+                  >
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-orange-100 text-orange-500 dark:bg-orange-900/20">
+                      <Send size={16} />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-semibold text-gray-900 dark:text-white">
+                        {t.title ?? t.subject ?? t.fileName ?? "Transfer"}
+                      </p>
+                      <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                        {t.fileCount ?? t.files ?? 1} file{(t.fileCount ?? t.files ?? 1) !== 1 ? "s" : ""}
+                        {" · "}{formatBytes(t.totalSize ?? t.size ?? 0)}
+                        {" · "}{formatRelative(t.createdAt)}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 flex-col items-end gap-1.5">
+                      <StatusBadge status={t.status ?? "pending"} />
+                      {(t.views !== undefined || t.downloads !== undefined) && (
+                        <p className="flex items-center gap-1.5 text-[11px] text-gray-400">
+                          <Eye size={10} />{t.views ?? 0}
+                          <Download size={10} />{t.downloads ?? 0}
+                        </p>
+                      )}
+                    </div>
+                  </Link>
+                ))}
+              </div>
+            )}
+          </Card>
+        </div>
+
+        {/* Right column */}
+        <div className="space-y-5">
+          {/* Notifications */}
+          <Card glass className="overflow-hidden">
+            <div className="flex items-center justify-between border-b border-gray-200/70 px-5 py-4 dark:border-zinc-800">
+              <div className="flex items-center gap-2">
+                <Bell size={14} className="text-orange-500" />
+                <h3 className="font-semibold text-gray-900 dark:text-white">Notifications</h3>
+                {unreadCount > 0 && (
+                  <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-orange-500 px-1.5 text-[10px] font-bold text-white">
+                    {unreadCount > 99 ? "99+" : unreadCount}
+                  </span>
+                )}
+              </div>
+              <Link href="/notifications" className="flex items-center gap-1 text-xs font-medium text-orange-500 hover:text-orange-600">
+                View all <ArrowUpRight size={11} />
+              </Link>
+            </div>
+            {loading ? (
+              <div className="flex items-center justify-center py-8"><Spinner size={20} /></div>
+            ) : notifications.length === 0 ? (
+              <p className="py-8 text-center text-sm text-gray-400">All caught up!</p>
+            ) : (
+              <div className="divide-y divide-gray-100 dark:divide-zinc-800/70">
+                {notifications.map((n, i) => <NotificationItem key={n.id ?? i} n={n} />)}
+              </div>
+            )}
+          </Card>
+
+          {/* Received */}
+          <Card glass className="overflow-hidden">
+            <div className="flex items-center justify-between border-b border-gray-200/70 px-5 py-4 dark:border-zinc-800">
+              <div className="flex items-center gap-2">
+                <Inbox size={15} className="text-blue-500" />
+                <h3 className="font-semibold text-gray-900 dark:text-white">Received Files</h3>
+              </div>
+              <Link href="/transfers/receive" className="text-xs font-medium text-orange-500 hover:text-orange-600">
+                View all
+              </Link>
+            </div>
+            {loading ? (
+              <div className="flex items-center justify-center py-8"><Spinner size={20} /></div>
+            ) : received.length === 0 ? (
+              <p className="py-8 text-center text-sm text-gray-400">No received transfers</p>
+            ) : (
+              <div className="divide-y divide-gray-100 dark:divide-zinc-800/70">
+                {received.map((r) => (
+                  <div key={r.id} className="flex items-center gap-3 px-5 py-3.5">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-100 text-blue-500 dark:bg-blue-900/20">
+                      <Inbox size={13} />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium text-gray-900 dark:text-white">
+                        {r.title ?? r.subject ?? r.fileName ?? "Transfer"}
+                      </p>
+                      <p className="truncate text-xs text-gray-500">{r.senderEmail ?? r.from ?? "—"}</p>
+                    </div>
+                    <span className="shrink-0 text-[11px] text-gray-400">
+                      {formatRelative(r.receivedAt ?? r.createdAt)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+
+          {/* Last Active Link */}
+          <Card glass className="p-5">
+            <div className="mb-3 flex items-center gap-2">
+              <LinkIcon size={14} className="text-purple-500" />
+              <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Last Active Link</h3>
+            </div>
+            {loading ? (
+              <div className="space-y-2">
+                <div className="h-9 animate-pulse rounded-xl bg-gray-200 dark:bg-zinc-800" />
+                <div className="h-4 w-32 animate-pulse rounded bg-gray-100 dark:bg-zinc-800/60" />
+              </div>
+            ) : lastLink ? (
+              <>
+                <div className="flex items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 dark:border-zinc-700 dark:bg-zinc-800">
+                  <span className="flex-1 truncate text-xs text-gray-600 dark:text-gray-300">
+                    {lastLink.url ?? lastLink.shortUrl ?? lastLink.link ?? "—"}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleCopy}
+                    aria-label="Copy link"
+                    className="shrink-0 text-gray-400 transition-colors hover:text-orange-500"
+                  >
+                    {copied ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
+                  </button>
+                </div>
+                <div className="mt-2.5 flex items-center justify-between text-xs text-gray-500">
+                  <span className="flex items-center gap-1"><Eye size={10} /> {lastLink.views ?? lastLink.viewCount ?? 0} views</span>
+                  <span className="flex items-center gap-1"><Download size={10} /> {lastLink.downloads ?? lastLink.downloadCount ?? 0} dl</span>
+                  {lastLink.expiresAt && (
+                    <span className="flex items-center gap-1 text-amber-500">
+                      <Clock size={10} /> {formatRelative(lastLink.expiresAt)}
+                    </span>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="flex flex-col items-center gap-2 py-4 text-center">
+                <p className="text-sm text-gray-400">No active links</p>
+                <Link href="/transfers/send?tab=link">
+                  <Button size="xs" variant="ghost">Create one</Button>
+                </Link>
+              </div>
+            )}
+          </Card>
+
+          {/* Upload Sessions or Activity fallback */}
+          {uploadSessions.length > 0 ? (
+            <Card glass className="overflow-hidden">
+              <div className="flex items-center border-b border-gray-200/70 px-5 py-4 dark:border-zinc-800">
+                <Upload size={14} className="mr-2 text-teal-500" />
+                <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Recent Uploads</h3>
+              </div>
+              <div className="divide-y divide-gray-100 dark:divide-zinc-800/70">
+                {uploadSessions.map((s, i) => (
+                  <div key={s.id ?? i} className="flex items-center gap-3 px-5 py-3.5">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-teal-100 text-teal-600 dark:bg-teal-900/20">
+                      <Upload size={13} />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium text-gray-900 dark:text-white">
+                        {s.fileName ?? s.originalName ?? s.key?.split("/").pop() ?? "Upload"}
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        {formatBytes(s.fileSize ?? s.size ?? 0)} · {formatRelative(s.createdAt)}
+                      </p>
+                    </div>
+                    <StatusBadge status={s.status ?? "completed"} />
+                  </div>
+                ))}
+              </div>
+            </Card>
+          ) : (
+            <Card glass className="overflow-hidden">
+              <div className="flex items-center justify-between border-b border-gray-200/70 px-5 py-4 dark:border-zinc-800">
+                <div className="flex items-center gap-2">
+                  <Activity size={14} className="text-orange-500" />
+                  <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Recent Activity</h3>
+                </div>
+                <Link href="/transactions" className="text-xs font-medium text-orange-500 hover:text-orange-600">
+                  View all
+                </Link>
+              </div>
+              {loading ? (
+                <div className="flex items-center justify-center py-8"><Spinner size={20} /></div>
+              ) : activity.length === 0 ? (
+                <p className="py-8 text-center text-sm text-gray-400">No recent activity</p>
+              ) : (
+                <div className="divide-y divide-gray-100 dark:divide-zinc-800/70">
+                  {activity.map((a, i) => <ActivityItem key={a.id ?? i} item={a} i={i} />)}
+                </div>
+              )}
+            </Card>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════
+   ADMIN DASHBOARD
+══════════════════════════════════════════ */
+function AdminDashboard({ name }: { name: string }) {
+  const [loading, setLoading]               = useState(true);
+  const [refreshing, setRefreshing]         = useState(false);
+  const [overview, setOverview]             = useState<any>({});
+  const [userStats, setUserStats]           = useState<any>({});
+  const [storage, setStorage]               = useState({ used: 0, quota: 0 });
+  const [teamUsers, setTeamUsers]           = useState<any[]>([]);
+  const [recentActivity, setRecentActivity] = useState<any[]>([]);
+  const [weekSeries, setWeekSeries]         = useState<any[]>([]);
+  const [unreadCount, setUnreadCount]       = useState(0);
+
+  const load = useCallback(async (silent = false) => {
+    try {
+      if (silent) setRefreshing(true); else setLoading(true);
+
+      const [ovRes, storRes, usersRes, actRes, statsRes, unreadRes] =
+        await Promise.allSettled([
+          adminApi.overview(),
+          adminApi.storage(),
+          adminApi.users({ limit: 8 }),
+          adminApi.activity({ limit: 50 }),
+          usersApi.adminStats(),
+          notificationsApi.unreadCount(),
         ]);
 
-        /* Files */
-
-        if (filesRes.status === "fulfilled") {
-          const data = filesRes.value.data;
-
-          const files = data?.files || data?.data || data || [];
-
-          setRecentFiles(Array.isArray(files) ? files.slice(0, 8) : []);
-
-          setStats((prev) => ({
-            ...prev,
-            totalFiles: data?.total || files.length,
-          }));
-        }
-
-        /* Storage */
-
-        if (storageRes.status === "fulfilled" && storageRes.value) {
-          const s = storageRes.value.data?.storage || storageRes.value.data;
-
-          setStats((prev) => ({
-            ...prev,
-            storageUsed: s?.used || 0,
-            storageQuota: s?.quota || 10737418240,
-          }));
-        }
-
-        /* Transactions */
-
-        if (txRes.status === "fulfilled") {
-          const t =
-            txRes.value.data?.transactions ||
-            txRes.value.data?.data ||
-            txRes.value.data ||
-            [];
-
-          setTransactions(Array.isArray(t) ? t.slice(0, 5) : []);
-        }
-      } finally {
-        setLoading(false);
+      if (ovRes.status === "fulfilled") {
+        const d = ovRes.value.data?.data ?? ovRes.value.data ?? {};
+        setOverview(d);
       }
+      if (storRes.status === "fulfilled") {
+        const d = storRes.value.data?.data ?? storRes.value.data ?? {};
+        setStorage({
+          used:  readStorageUsed(d),
+          quota: readStorageQuota(d),
+        });
+      }
+      if (usersRes.status === "fulfilled") {
+        const inner = usersRes.value.data?.data ?? usersRes.value.data;
+        const list  = inner?.users ?? (Array.isArray(inner) ? inner : []);
+        setTeamUsers(Array.isArray(list) ? list : []);
+      }
+      if (actRes.status === "fulfilled") {
+        const inner = actRes.value.data?.data ?? actRes.value.data;
+        const list  = inner?.activities ?? inner?.activity ?? (Array.isArray(inner) ? inner : []);
+        const arr   = Array.isArray(list) ? list : [];
+        setRecentActivity(arr.slice(0, 8));
+        setWeekSeries(toWeekSeries(groupByDay(arr), "actions"));
+      }
+      if (statsRes.status === "fulfilled") {
+        const d = statsRes.value.data?.data ?? statsRes.value.data ?? {};
+        setUserStats(d);
+      }
+      if (unreadRes.status === "fulfilled") {
+        const d = unreadRes.value.data?.data ?? unreadRes.value.data ?? {};
+        setUnreadCount(d.count ?? d.unreadCount ?? 0);
+      }
+    } catch (err) {
+      handleApiError(err);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
     }
+  }, []);
 
-    load();
-  }, [user?.id]);
+  useEffect(() => { load(); }, [load]);
 
-  /* =========================
-     STORAGE %
-  ========================= */
+  const storageChart = useMemo(
+    () =>
+      teamUsers
+        .filter((u) => readStorageUsed(u) > 0)
+        .slice(0, 6)
+        .map((u) => ({
+          name:    (u.name ?? u.email ?? "User").split(/\s+/)[0],
+          storage: readStorageUsed(u),
+        })),
+    [teamUsers],
+  );
 
-  const usedPct = Math.min((stats.storageUsed / stats.storageQuota) * 100, 100);
+  const ov = overview;
+  const us = userStats;
 
-  /* =========================
-     STATS
-  ========================= */
+  return (
+    <div className="space-y-7">
+      {/* ── Hero banner ── */}
+      <div className="relative overflow-hidden rounded-3xl bg-linear-to-br from-blue-600 via-blue-700 to-cyan-600 p-8 shadow-xl shadow-blue-500/20">
+        <div className="pointer-events-none absolute inset-0 overflow-hidden opacity-10">
+          <div className="absolute -right-12 -top-12 h-60 w-60 rounded-full bg-white" />
+          <div className="absolute -bottom-10 -left-10 h-44 w-44 rounded-full bg-white" />
+        </div>
+        <div className="relative flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <div className="mb-2 inline-flex items-center gap-1.5 rounded-full bg-white/20 px-3 py-1 text-xs font-bold text-white">
+              <Crown size={11} /> Admin Panel
+            </div>
+            <h1 className="text-3xl font-bold text-white">
+              Team Overview, <span className="text-blue-100">{name}</span>
+            </h1>
+            <p className="mt-1.5 max-w-lg text-sm text-blue-100/90">
+              {loading
+                ? "Loading team stats…"
+                : `${(ov.totalUsers ?? us.total ?? 0).toLocaleString()} members · ${(ov.totalTransfers ?? 0).toLocaleString()} transfers · ${formatBytes(storage.used)} used`}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="secondary" size="sm"
+              leftIcon={<RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />}
+              onClick={() => load(true)}
+              disabled={refreshing || loading}
+            >
+              Refresh
+            </Button>
+            <Link href="/admin/users">
+              <Button leftIcon={<Users size={15} />} className="rounded-xl border-0 bg-white/20 text-white shadow-none backdrop-blur-sm hover:bg-white/30">
+                Manage Team
+              </Button>
+            </Link>
+          </div>
+        </div>
+      </div>
 
-  const statCards = [
-    {
-      label: "Total Files",
-      value: stats.totalFiles.toLocaleString(),
-      icon: <Files size={22} />,
-      color: "from-orange-500 to-orange-600",
-    },
+      {/* ── 6 stat cards ── */}
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-3 xl:grid-cols-6">
+        <StatCard loading={loading} icon={<Users size={18} />}       label="Total Members"  value={(ov.totalUsers ?? us.total ?? 0).toLocaleString()}                   sub="All accounts"   from="from-blue-500"    to="to-cyan-500"    href="/admin/users" />
+        <StatCard loading={loading} icon={<Activity size={18} />}    label="Active Users"   value={(us.active ?? ov.activeUsers ?? 0).toLocaleString()}                  sub="Online/active"  from="from-emerald-500" to="to-green-600"   href="/admin/users" />
+        <StatCard loading={loading} icon={<Send size={18} />}        label="Team Transfers" value={(ov.totalTransfers ?? 0).toLocaleString()}                            sub="All time"       from="from-orange-500"  to="to-amber-500"   href="/admin" />
+        <StatCard loading={loading} icon={<CheckCircle size={18} />} label="Active Links"   value={(ov.activeLinks ?? 0).toLocaleString()}                              sub="Across team"    from="from-purple-500"  to="to-violet-600"  href="/links" />
+        <StatCard loading={loading} icon={<Download size={18} />}    label="Downloads"      value={(ov.totalDownloads ?? ov.recentDownloads ?? 0).toLocaleString()}      sub="All time"       from="from-sky-500"     to="to-blue-600"    href="/admin" />
+        <StatCard loading={loading} icon={<Bell size={18} />}        label="Notifications"  value={unreadCount.toLocaleString()}                                        sub="Unread"         from="from-rose-500"    to="to-pink-500"    href="/notifications" />
+      </div>
 
-    {
-      label: "Storage Used",
-      value: formatBytes(stats.storageUsed),
-      icon: <HardDrive size={22} />,
-      color: "from-blue-500 to-cyan-500",
-    },
+      {/* ── User role breakdown ── */}
+      {!loading && (us.active !== undefined || us.total !== undefined) && (
+        <div className="grid grid-cols-3 gap-4">
+          <div className="rounded-2xl border border-blue-200 bg-blue-50/60 p-4 dark:border-blue-800/40 dark:bg-blue-900/10">
+            <div className="mb-1.5 flex items-center gap-2">
+              <Shield size={13} className="text-blue-500" />
+              <span className="text-xs font-semibold text-blue-700 dark:text-blue-400">Admins</span>
+            </div>
+            <p className="text-2xl font-bold text-blue-700 dark:text-blue-300">
+              {(us.byRole?.admin ?? us.admin ?? 0).toLocaleString()}
+            </p>
+          </div>
+          <div className="rounded-2xl border border-emerald-200 bg-emerald-50/60 p-4 dark:border-emerald-800/40 dark:bg-emerald-900/10">
+            <div className="mb-1.5 flex items-center gap-2">
+              <Users size={13} className="text-emerald-500" />
+              <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-400">Regular Users</span>
+            </div>
+            <p className="text-2xl font-bold text-emerald-700 dark:text-emerald-300">
+              {(us.byRole?.user ?? us.users ?? 0).toLocaleString()}
+            </p>
+          </div>
+          <div className="rounded-2xl border border-gray-200 bg-gray-50/60 p-4 dark:border-zinc-700 dark:bg-zinc-800/50">
+            <div className="mb-1.5 flex items-center gap-2">
+              <XCircle size={13} className="text-gray-400" />
+              <span className="text-xs font-semibold text-gray-500">Inactive</span>
+            </div>
+            <p className="text-2xl font-bold text-gray-700 dark:text-gray-300">
+              {((us.total ?? 0) - (us.active ?? 0)).toLocaleString()}
+            </p>
+          </div>
+        </div>
+      )}
 
-    {
-      label: "Shared Files",
-      value: stats.sharedFiles.toLocaleString(),
-      icon: <Share2 size={22} />,
-      color: "from-green-500 to-emerald-500",
-    },
+      {/* ── Charts ── */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <Card glass className="overflow-hidden">
+          <SectionHead
+            title="Team Activity (7 Days)"
+            sub="Actions performed across the team"
+            icon={<Activity size={15} className="text-blue-400" />}
+          />
+          <div className="px-2 pb-4 pt-5">
+            {loading ? (
+              <div className="flex h-44 items-center justify-center"><Spinner size={24} /></div>
+            ) : (
+              <ResponsiveContainer width="100%" height={176}>
+                <LineChart data={weekSeries} margin={{ left: -20, right: 8 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" strokeOpacity={0.5} />
+                  <XAxis dataKey="day" tick={{ fontSize: 11, fill: "#9ca3af" }} axisLine={false} tickLine={false} />
+                  <YAxis allowDecimals={false} tick={{ fontSize: 11, fill: "#9ca3af" }} axisLine={false} tickLine={false} />
+                  <Tooltip content={<ChartTip />} />
+                  <Line
+                    type="monotone" dataKey="actions" name="Actions"
+                    stroke="#3b82f6" strokeWidth={2.5}
+                    dot={{ r: 3, fill: "#3b82f6", strokeWidth: 0 }}
+                    activeDot={{ r: 5 }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        </Card>
 
-    {
-      label: "Storage Free",
-      value: formatBytes(Math.max(0, stats.storageQuota - stats.storageUsed)),
-      icon: <Upload size={22} />,
-      color: "from-yellow-500 to-orange-500",
-    },
-  ];
+        <Card glass className="overflow-hidden">
+          <SectionHead
+            title="Storage by Member"
+            sub="Top 6 users by storage used"
+            icon={<HardDrive size={15} className="text-blue-400" />}
+          />
+          <div className="px-2 pb-4 pt-5">
+            {loading ? (
+              <div className="flex h-44 items-center justify-center"><Spinner size={24} /></div>
+            ) : storageChart.length === 0 ? (
+              <div className="flex h-44 items-center justify-center text-sm text-gray-400">No data yet</div>
+            ) : (
+              <ResponsiveContainer width="100%" height={176}>
+                <BarChart data={storageChart} margin={{ left: -20, right: 8 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" strokeOpacity={0.5} />
+                  <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#9ca3af" }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fontSize: 11, fill: "#9ca3af" }} axisLine={false} tickLine={false} tickFormatter={(v) => formatBytes(v)} />
+                  <Tooltip content={<ChartTip formatter={formatBytes} />} />
+                  <Bar dataKey="storage" name="Storage" fill="#3b82f6" radius={[6, 6, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        </Card>
+      </div>
 
-  /* =========================
-     TX ICONS
-  ========================= */
+      {/* ── Team storage ── */}
+      <Card glass className="p-6">
+        <div className="mb-4 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <HardDrive size={15} className="text-blue-500" />
+            <h3 className="font-semibold text-gray-900 dark:text-white">Team Storage Usage</h3>
+          </div>
+          <Link href="/admin/storage" className="flex items-center gap-1 text-sm text-blue-500 hover:text-blue-600">
+            Manage <ArrowUpRight size={13} />
+          </Link>
+        </div>
+        <StorageBar used={storage.used} quota={storage.quota} loading={loading} />
+      </Card>
 
-  const txIcons: Record<string, React.ReactNode> = {
-    upload: <Upload size={16} className="text-green-500" />,
+      {/* ── Team table + activity ── */}
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-[1fr_340px]">
+        <Card glass className="overflow-hidden">
+          <SectionHead title="Team Members" href="/admin/users" linkLabel="Manage" />
+          {loading ? (
+            <div className="flex items-center justify-center py-12"><Spinner size={24} /></div>
+          ) : teamUsers.length === 0 ? (
+            <p className="py-10 text-center text-sm text-gray-400">No team members found</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="border-b border-gray-100 bg-gray-50/60 dark:border-zinc-800 dark:bg-zinc-900/50">
+                  <tr>
+                    <th className="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">User</th>
+                    <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-gray-500">Storage</th>
+                    <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-gray-500">Transfers</th>
+                    <th className="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-gray-500">Role</th>
+                    <th className="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-gray-500">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 dark:divide-zinc-800/70">
+                  {teamUsers.map((u) => (
+                    <tr key={u.id ?? u.email} className="transition-colors hover:bg-blue-50/40 dark:hover:bg-blue-500/5">
+                      <td className="px-6 py-3.5">
+                        <div className="flex items-center gap-3">
+                          <Avatar name={u.name ?? u.email ?? "U"} size={32} />
+                          <div>
+                            <p className="font-medium text-gray-900 dark:text-white">{u.name ?? "—"}</p>
+                            <p className="text-xs text-gray-500">{u.email}</p>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3.5 text-right text-xs tabular-nums text-gray-500">
+                        {formatBytes(readStorageUsed(u))}
+                      </td>
+                      <td className="px-4 py-3.5 text-right text-xs tabular-nums text-gray-500">
+                        {(u.transferCount ?? u.transfers ?? 0).toLocaleString()}
+                      </td>
+                      <td className="px-4 py-3.5 text-center">
+                        <span className={cn(
+                          "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide",
+                          (u.role ?? "user") === "admin"
+                            ? "bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400"
+                            : "bg-gray-100 text-gray-600 dark:bg-zinc-800 dark:text-gray-400",
+                        )}>
+                          {u.role ?? "user"}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3.5 text-center">
+                        <span className={`inline-block h-2 w-2 rounded-full ${(u.isActive ?? u.active) ? "bg-emerald-500" : "bg-gray-400"}`} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
 
-    download: <Download size={16} className="text-blue-500" />,
+        <Card glass className="overflow-hidden">
+          <div className="border-b border-gray-200/70 px-5 py-4 dark:border-zinc-800">
+            <div className="flex items-center gap-2">
+              <Activity size={14} className="text-blue-500" />
+              <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Recent Team Activity</h3>
+            </div>
+          </div>
+          {loading ? (
+            <div className="flex items-center justify-center py-8"><Spinner size={20} /></div>
+          ) : recentActivity.length === 0 ? (
+            <p className="py-8 text-center text-sm text-gray-400">No recent activity</p>
+          ) : (
+            <div className="divide-y divide-gray-100 dark:divide-zinc-800/70">
+              {recentActivity.map((a, i) => <ActivityItem key={a.id ?? i} item={a} i={i} />)}
+            </div>
+          )}
+        </Card>
+      </div>
+    </div>
+  );
+}
 
-    share: <Share2 size={16} className="text-orange-500" />,
+/* ══════════════════════════════════════════
+   SUPER ADMIN DASHBOARD
+══════════════════════════════════════════ */
+function SuperAdminDashboard({ name }: { name: string }) {
+  const [loading, setLoading]       = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [overview, setOverview]     = useState<any>({});
+  const [userStats, setUserStats]   = useState<any>({});
+  const [storage, setStorage]       = useState({ used: 0, quota: 0 });
+  const [topUsers, setTopUsers]     = useState<any[]>([]);
+  const [auditLog, setAuditLog]     = useState<any[]>([]);
+  const [weekSeries, setWeekSeries] = useState<any[]>([]);
+  const [notifStats, setNotifStats] = useState<any>({});
 
-    delete: <Trash2 size={16} className="text-red-500" />,
-  };
+  const load = useCallback(async (silent = false) => {
+    try {
+      if (silent) setRefreshing(true); else setLoading(true);
+
+      const [ovRes, storRes, usersRes, actRes, statsRes, notifRes] =
+        await Promise.allSettled([
+          adminApi.overview(),
+          adminApi.storage(),
+          adminApi.users({ limit: 8 }),
+          adminApi.activity({ limit: 50 }),
+          usersApi.adminStats(),
+          notificationsApi.adminStats(),
+        ]);
+
+      if (ovRes.status === "fulfilled") {
+        const d = ovRes.value.data?.data ?? ovRes.value.data ?? {};
+        setOverview(d);
+      }
+      if (storRes.status === "fulfilled") {
+        const d = storRes.value.data?.data ?? storRes.value.data ?? {};
+        setStorage({
+          used:  readStorageUsed(d),
+          quota: readStorageQuota(d),
+        });
+      }
+      if (usersRes.status === "fulfilled") {
+        const inner = usersRes.value.data?.data ?? usersRes.value.data;
+        const list  = inner?.users ?? (Array.isArray(inner) ? inner : []);
+        setTopUsers(Array.isArray(list) ? list.slice(0, 8) : []);
+      }
+      if (actRes.status === "fulfilled") {
+        const inner = actRes.value.data?.data ?? actRes.value.data;
+        const list  = inner?.activities ?? inner?.activity ?? (Array.isArray(inner) ? inner : []);
+        const arr   = Array.isArray(list) ? list : [];
+        setAuditLog(arr.slice(0, 8));
+        setWeekSeries(toWeekSeries(groupByDay(arr), "events"));
+      }
+      if (statsRes.status === "fulfilled") {
+        const d = statsRes.value.data?.data ?? statsRes.value.data ?? {};
+        setUserStats(d);
+      }
+      if (notifRes.status === "fulfilled") {
+        const d = notifRes.value.data?.data ?? notifRes.value.data ?? {};
+        setNotifStats(d);
+      }
+    } catch (err) {
+      handleApiError(err);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const s  = overview;
+  const us = userStats;
+
+  const linkPie = useMemo(() => [
+    { name: "Active",   value: s.activeLinks   ?? 0, color: "#10b981" },
+    { name: "Expired",  value: s.expiredLinks  ?? 0, color: "#9ca3af" },
+    { name: "Disabled", value: s.disabledLinks ?? 0, color: "#ef4444" },
+  ].filter((d) => d.value > 0), [s.activeLinks, s.expiredLinks, s.disabledLinks]);
+
+  const storageChart = useMemo(
+    () =>
+      topUsers
+        .filter((u) => readStorageUsed(u) > 0)
+        .slice(0, 6)
+        .map((u, i) => ({
+          name:    (u.name ?? u.email ?? "User").split(/\s+/)[0],
+          storage: readStorageUsed(u),
+          color:   `hsl(${(i * 53 + 15) % 360}, 65%, 52%)`,
+        })),
+    [topUsers],
+  );
+
+  return (
+    <div className="space-y-7">
+      {/* ── Hero banner ── */}
+      <div className="relative overflow-hidden rounded-3xl bg-linear-to-br from-red-600 via-red-700 to-orange-600 p-8 shadow-xl shadow-red-500/20">
+        <div className="pointer-events-none absolute inset-0 overflow-hidden opacity-10">
+          <div className="absolute -right-12 -top-12 h-60 w-60 rounded-full bg-white" />
+          <div className="absolute -bottom-10 -left-10 h-44 w-44 rounded-full bg-white" />
+          <div className="absolute right-36 top-10 h-24 w-24 rounded-full bg-white" />
+        </div>
+        <div className="relative flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <div className="mb-2 inline-flex items-center gap-1.5 rounded-full bg-white/20 px-3 py-1 text-xs font-bold text-white">
+              <Shield size={11} /> Super Admin
+            </div>
+            <h1 className="text-3xl font-bold text-white">
+              Platform Overview, <span className="text-red-100">{name}</span>
+            </h1>
+            <p className="mt-1.5 max-w-lg text-sm text-red-100/90">
+              {loading
+                ? "Loading platform stats…"
+                : `${(s.totalUsers ?? us.total ?? 0).toLocaleString()} users · ${(s.totalTransfers ?? 0).toLocaleString()} transfers · ${formatBytes(storage.used)} stored`}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="secondary" size="sm"
+              leftIcon={<RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />}
+              onClick={() => load(true)}
+              disabled={refreshing || loading}
+            >
+              Refresh
+            </Button>
+            <Link href="/superadmin">
+              <Button leftIcon={<Shield size={15} />} className="rounded-xl border-0 bg-white/20 text-white shadow-none backdrop-blur-sm hover:bg-white/30">
+                Super Admin
+              </Button>
+            </Link>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Primary stats ── */}
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <StatCard loading={loading} icon={<Users size={20} />}     label="Total Users"     value={(s.totalUsers ?? us.total ?? 0).toLocaleString()}                    from="from-red-500"    to="to-rose-600"    href="/admin/users" />
+        <StatCard loading={loading} icon={<Send size={20} />}      label="Total Transfers" value={(s.totalTransfers ?? 0).toLocaleString()}                            from="from-orange-500" to="to-amber-500"   href="/admin" />
+        <StatCard loading={loading} icon={<HardDrive size={20} />} label="Total Storage"   value={formatBytes(s.totalStorage ?? storage.used ?? 0)} sub="All users"   from="from-purple-500" to="to-violet-600"  href="/admin/storage" />
+        <StatCard loading={loading} icon={<Download size={20} />}  label="Total Downloads" value={(s.totalDownloads ?? s.recentDownloads ?? 0).toLocaleString()}       from="from-blue-500"   to="to-cyan-500"    href="/admin" />
+      </div>
+
+      {/* ── Secondary metrics grid ── */}
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50/60 p-4 dark:border-emerald-800/40 dark:bg-emerald-900/10">
+          <div className="mb-1.5 flex items-center gap-1.5">
+            <CheckCircle size={13} className="text-emerald-500" />
+            <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-400">Active Links</span>
+          </div>
+          {loading ? <div className="h-8 animate-pulse rounded-lg bg-emerald-100 dark:bg-emerald-800/30" /> :
+            <p className="text-2xl font-bold text-emerald-700 dark:text-emerald-300">{(s.activeLinks ?? 0).toLocaleString()}</p>}
+        </div>
+        <div className="rounded-2xl border border-gray-200 bg-gray-50/60 p-4 dark:border-zinc-700 dark:bg-zinc-800/50">
+          <div className="mb-1.5 flex items-center gap-1.5">
+            <Clock size={13} className="text-gray-400" />
+            <span className="text-xs font-semibold text-gray-500">Expired Links</span>
+          </div>
+          {loading ? <div className="h-8 animate-pulse rounded-lg bg-gray-200 dark:bg-zinc-700" /> :
+            <p className="text-2xl font-bold text-gray-700 dark:text-gray-300">{(s.expiredLinks ?? 0).toLocaleString()}</p>}
+        </div>
+        <div className="rounded-2xl border border-red-200 bg-red-50/60 p-4 dark:border-red-800/40 dark:bg-red-900/10">
+          <div className="mb-1.5 flex items-center gap-1.5">
+            <XCircle size={13} className="text-red-400" />
+            <span className="text-xs font-semibold text-red-600 dark:text-red-400">Disabled Links</span>
+          </div>
+          {loading ? <div className="h-8 animate-pulse rounded-lg bg-red-100 dark:bg-red-800/30" /> :
+            <p className="text-2xl font-bold text-red-600 dark:text-red-300">{(s.disabledLinks ?? 0).toLocaleString()}</p>}
+        </div>
+        <div className="rounded-2xl border border-blue-200 bg-blue-50/60 p-4 dark:border-blue-800/40 dark:bg-blue-900/10">
+          <div className="mb-1.5 flex items-center gap-1.5">
+            <Shield size={13} className="text-blue-500" />
+            <span className="text-xs font-semibold text-blue-700 dark:text-blue-400">Admins</span>
+          </div>
+          {loading ? <div className="h-8 animate-pulse rounded-lg bg-blue-100 dark:bg-blue-800/30" /> :
+            <p className="text-2xl font-bold text-blue-700 dark:text-blue-300">{(us.byRole?.admin ?? us.admin ?? 0).toLocaleString()}</p>}
+        </div>
+        <div className="rounded-2xl border border-teal-200 bg-teal-50/60 p-4 dark:border-teal-800/40 dark:bg-teal-900/10">
+          <div className="mb-1.5 flex items-center gap-1.5">
+            <Users size={13} className="text-teal-500" />
+            <span className="text-xs font-semibold text-teal-700 dark:text-teal-400">Active Users</span>
+          </div>
+          {loading ? <div className="h-8 animate-pulse rounded-lg bg-teal-100 dark:bg-teal-800/30" /> :
+            <p className="text-2xl font-bold text-teal-700 dark:text-teal-300">{(us.active ?? s.activeUsers ?? 0).toLocaleString()}</p>}
+        </div>
+        <div className="rounded-2xl border border-amber-200 bg-amber-50/60 p-4 dark:border-amber-800/40 dark:bg-amber-900/10">
+          <div className="mb-1.5 flex items-center gap-1.5">
+            <Bell size={13} className="text-amber-500" />
+            <span className="text-xs font-semibold text-amber-700 dark:text-amber-400">Notifications</span>
+          </div>
+          {loading ? <div className="h-8 animate-pulse rounded-lg bg-amber-100 dark:bg-amber-800/30" /> :
+            <p className="text-2xl font-bold text-amber-700 dark:text-amber-300">{(notifStats.total ?? notifStats.unread ?? 0).toLocaleString()}</p>}
+        </div>
+      </div>
+
+      {/* ── Charts ── */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_268px]">
+        <Card glass className="overflow-hidden">
+          <SectionHead
+            title="Platform Activity (7 Days)"
+            sub="System-wide events across all users"
+            icon={<Zap size={15} className="text-red-400" />}
+          />
+          <div className="px-2 pb-4 pt-5">
+            {loading ? (
+              <div className="flex h-44 items-center justify-center"><Spinner size={24} /></div>
+            ) : (
+              <ResponsiveContainer width="100%" height={176}>
+                <AreaChart data={weekSeries} margin={{ left: -20, right: 8 }}>
+                  <defs>
+                    <linearGradient id="saGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%"  stopColor="#ef4444" stopOpacity={0.25} />
+                      <stop offset="95%" stopColor="#ef4444" stopOpacity={0}    />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" strokeOpacity={0.5} />
+                  <XAxis dataKey="day" tick={{ fontSize: 11, fill: "#9ca3af" }} axisLine={false} tickLine={false} />
+                  <YAxis allowDecimals={false} tick={{ fontSize: 11, fill: "#9ca3af" }} axisLine={false} tickLine={false} />
+                  <Tooltip content={<ChartTip />} />
+                  <Area
+                    type="monotone" dataKey="events" name="Events"
+                    stroke="#ef4444" strokeWidth={2.5} fill="url(#saGrad)"
+                    dot={{ r: 3, fill: "#ef4444", strokeWidth: 0 }}
+                    activeDot={{ r: 5, fill: "#ef4444" }}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        </Card>
+
+        <Card glass className="p-6">
+          <h3 className="mb-4 font-semibold text-gray-900 dark:text-white">Link Status</h3>
+          {loading ? (
+            <div className="flex h-44 items-center justify-center"><Spinner size={24} /></div>
+          ) : linkPie.length > 0 ? (
+            <div className="flex flex-col items-center gap-3">
+              <ResponsiveContainer width="100%" height={140}>
+                <PieChart>
+                  <Pie
+                    data={linkPie} cx="50%" cy="50%"
+                    innerRadius={38} outerRadius={58}
+                    startAngle={90} endAngle={-270}
+                    dataKey="value" paddingAngle={3}
+                  >
+                    {linkPie.map((entry, i) => <Cell key={i} fill={entry.color} />)}
+                  </Pie>
+                  <Tooltip content={<ChartTip />} />
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="flex w-full flex-col gap-1.5">
+                {linkPie.map((d) => (
+                  <div key={d.name} className="flex items-center justify-between text-xs">
+                    <div className="flex items-center gap-1.5">
+                      <span className="h-2 w-2 rounded-full" style={{ background: d.color }} />
+                      <span className="text-gray-600 dark:text-gray-400">{d.name}</span>
+                    </div>
+                    <span className="font-semibold text-gray-900 dark:text-white">{d.value.toLocaleString()}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="flex h-44 items-center justify-center text-sm text-gray-400">No link data</div>
+          )}
+        </Card>
+      </div>
+
+      {/* ── Storage by user bar ── */}
+      <Card glass className="overflow-hidden">
+        <SectionHead
+          title="Storage by User"
+          sub="Top 6 users by storage consumed"
+          href="/admin/storage"
+          linkLabel="Manage"
+          icon={<HardDrive size={15} className="text-red-400" />}
+        />
+        <div className="px-4 pb-6 pt-5">
+          {loading ? (
+            <div className="flex h-44 items-center justify-center"><Spinner size={24} /></div>
+          ) : storageChart.length === 0 ? (
+            <div className="flex h-44 items-center justify-center text-sm text-gray-400">No data yet</div>
+          ) : (
+            <ResponsiveContainer width="100%" height={176}>
+              <BarChart data={storageChart} margin={{ left: -10, right: 8 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" strokeOpacity={0.5} />
+                <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#9ca3af" }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fontSize: 11, fill: "#9ca3af" }} axisLine={false} tickLine={false} tickFormatter={(v) => formatBytes(v)} />
+                <Tooltip content={<ChartTip formatter={formatBytes} />} />
+                <Bar dataKey="storage" name="Storage" radius={[6, 6, 0, 0]}>
+                  {storageChart.map((entry, i) => <Cell key={i} fill={entry.color} />)}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+      </Card>
+
+      {/* ── Platform storage ── */}
+      <Card glass className="p-6">
+        <div className="mb-4 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <HardDrive size={15} className="text-red-500" />
+            <h3 className="font-semibold text-gray-900 dark:text-white">Platform Storage</h3>
+          </div>
+          <Link href="/admin/storage" className="flex items-center gap-1 text-sm text-red-500 hover:text-red-600">
+            Manage <ArrowUpRight size={13} />
+          </Link>
+        </div>
+        <StorageBar used={storage.used} quota={storage.quota} loading={loading} />
+      </Card>
+
+      {/* ── Top users + audit log ── */}
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-[1fr_340px]">
+        <Card glass className="overflow-hidden">
+          <SectionHead title="Top Users by Storage" href="/admin/users" />
+          {loading ? (
+            <div className="flex items-center justify-center py-12"><Spinner size={24} /></div>
+          ) : topUsers.length === 0 ? (
+            <p className="py-10 text-center text-sm text-gray-400">No users found</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="border-b border-gray-100 bg-gray-50/60 dark:border-zinc-800 dark:bg-zinc-900/50">
+                  <tr>
+                    <th className="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">#</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">User</th>
+                    <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-gray-500">Storage</th>
+                    <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-gray-500">Transfers</th>
+                    <th className="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-gray-500">Role</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 dark:divide-zinc-800/70">
+                  {topUsers.map((u, i) => (
+                    <tr key={u.id ?? u.email} className="transition-colors hover:bg-red-50/40 dark:hover:bg-red-500/5">
+                      <td className="px-6 py-3.5 text-sm font-bold text-gray-300 dark:text-zinc-600">#{i + 1}</td>
+                      <td className="px-4 py-3.5">
+                        <div className="flex items-center gap-3">
+                          <Avatar name={u.name ?? u.email ?? "U"} size={30} />
+                          <div>
+                            <p className="font-medium text-gray-900 dark:text-white">{u.name ?? "—"}</p>
+                            <p className="text-xs text-gray-500">{u.email}</p>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3.5 text-right text-xs tabular-nums text-gray-500">
+                        {formatBytes(readStorageUsed(u))}
+                      </td>
+                      <td className="px-4 py-3.5 text-right text-xs tabular-nums text-gray-500">
+                        {(u.transferCount ?? u.transfers ?? 0).toLocaleString()}
+                      </td>
+                      <td className="px-4 py-3.5 text-center">
+                        <span className={cn(
+                          "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide",
+                          (u.role ?? "user") === "superadmin"
+                            ? "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400"
+                            : (u.role ?? "user") === "admin"
+                            ? "bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400"
+                            : "bg-gray-100 text-gray-600 dark:bg-zinc-800 dark:text-gray-400",
+                        )}>
+                          {u.role ?? "user"}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
+
+        <Card glass className="overflow-hidden">
+          <div className="flex items-center justify-between border-b border-gray-200/70 px-5 py-4 dark:border-zinc-800">
+            <div className="flex items-center gap-2">
+              <Shield size={13} className="text-red-500" />
+              <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Audit Log</h3>
+            </div>
+            <Link href="/admin/activity" className="text-xs text-red-500 hover:text-red-600">View all</Link>
+          </div>
+          {loading ? (
+            <div className="flex items-center justify-center py-8"><Spinner size={20} /></div>
+          ) : auditLog.length === 0 ? (
+            <p className="py-8 text-center text-sm text-gray-400">No audit entries</p>
+          ) : (
+            <div className="divide-y divide-gray-100 dark:divide-zinc-800/70">
+              {auditLog.map((log, i) => (
+                <div key={log.id ?? i} className="flex items-start gap-3 px-5 py-3.5">
+                  <div className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-red-400" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-medium text-gray-800 dark:text-gray-200">
+                      {log.description ?? log.action ?? "—"}
+                    </p>
+                    <p className="mt-0.5 text-[11px] text-gray-500">
+                      {log.userEmail ?? log.actor ?? "—"} · {formatRelative(log.createdAt)}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════
+   PAGE ENTRY
+══════════════════════════════════════════ */
+export default function DashboardPage() {
+  const { user } = useAuth();
+  const role      = (user?.role ?? "user").toLowerCase();
+  const firstName = user?.name?.split(" ")[0] ?? "there";
 
   return (
     <AuthGuard>
       <DashboardLayout>
-        <div
-          className="
-    space-y-8
-    animate-fade-in
-    pb-10
-  "
-        >
-          {/* HEADER */}
-
-          <div className="flex flex-col gap-2">
-            <h1
-              className="
-    text-3xl
-    font-bold
-    tracking-tight
-    text-[var(--text)]
-  "
-            >
-              Welcome back,
-              <span className="gradient-text ml-2">
-                {user?.name?.split(" ")[0]}
-              </span>
-              👋
-            </h1>
-
-            <p
-              className="
-    text-sm
-    leading-relaxed
-    text-[var(--text-muted)]
-  "
-            >
-              Here&apos;s what&apos;s happening with your files today
-            </p>
-          </div>
-
-          {/* STATS */}
-
-          {loading ? (
-            <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-4">
-              {[1, 2, 3, 4].map((i) => (
-                <div key={i} className="h-28 rounded-2xl skeleton" />
-              ))}
-            </div>
+        <div className="animate-fade-in pb-10">
+          {role === "superadmin" ? (
+            <SuperAdminDashboard name={firstName} />
+          ) : role === "admin" ? (
+            <AdminDashboard name={firstName} />
           ) : (
-            <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-4">
-              {statCards.map((s, i) => (
-                <Card key={i} hover glass padding>
-                  <div
-                    className={`
-    mb-5 flex h-14 w-14
-    items-center justify-center
-    rounded-2xl
-    bg-gradient-to-br
-    ${s.color}
-
-    text-white
-    shadow-lg
-    transition-all duration-300
-
-    group-hover:scale-110
-  `}
-                  >
-                    {s.icon}
-                  </div>
-
-                  <h3 className="text-3xl font-bold text-[var(--text)]">
-                    {s.value}
-                  </h3>
-
-                  <p className="mt-1 text-sm text-[var(--text-muted)]">
-                    {s.label}
-                  </p>
-                </Card>
-              ))}
-            </div>
+            <UserDashboard name={firstName} user={user} />
           )}
-
-          {/* MAIN GRID */}
-
-          <div className="grid grid-cols-1 gap-6 xl:grid-cols-[1fr_360px]">
-            {/* RECENT FILES */}
-
-            <Card glass className="overflow-hidden">
-              <div className="flex items-center justify-between border-b border-gray-200 px-6 py-5 dark:border-gray-700">
-                <h2 className="text-lg font-semibold">Recent Files</h2>
-
-                <Link
-                  href="/files"
-                  className="
-                    flex items-center gap-1
-                    text-sm font-medium
-                    text-orange-500
-                    hover:text-orange-600
-                  "
-                >
-                  View all
-                  <ArrowUpRight size={14} />
-                </Link>
-              </div>
-
-              {loading ? (
-                <div className="space-y-4 p-6">
-                  {[1, 2, 3, 4].map((i) => (
-                    <div key={i} className="h-14 rounded-xl skeleton" />
-                  ))}
-                </div>
-              ) : recentFiles.length === 0 ? (
-                <div className="flex flex-col items-center justify-center px-6 py-16 text-center">
-                  <div className="mb-4 text-5xl">📂</div>
-
-                  <p className="text-sm text-[var(--text-muted)]">
-                    No files uploaded yet.
-                  </p>
-                </div>
-              ) : (
-                <div className="divide-y divide-gray-200 dark:divide-gray-700">
-                  {recentFiles.map((file) => (
-                    <div
-                      key={file.id}
-                      className="
-                          flex items-center gap-4
-                          px-6 py-4
-                          transition-colors
-                         hover:bg-orange-50/60
-dark:hover:bg-orange-500/5
-                        "
-                    >
-                      <div
-                        className="
-                            flex h-12 w-12
-                            items-center justify-center
-                            rounded-2xl
-                            border border-gray-200
-                            bg-gray-100
-                            shadow-sm
-                            text-xl
-                            dark:border-gray-700
-                            dark:bg-gray-800
-                          "
-                      >
-                        {getFileIcon(file.mimeType, file.extension || "")}
-                      </div>
-
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-semibold">
-                          {file.name}
-                        </p>
-
-                        <p className="text-xs text-[var(--text-muted)]">
-                          {formatBytes(file.size)} •{" "}
-                          {formatRelative(file.createdAt)}
-                        </p>
-                      </div>
-
-                      {file.isShared && <Badge variant="info">Shared</Badge>}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </Card>
-
-            {/* RIGHT SIDE */}
-
-            <div className="space-y-6">
-              {/* STORAGE */}
-
-              <Card glass padding>
-                <h3 className="mb-5 text-lg font-semibold">Storage Usage</h3>
-
-                <div className="mb-3 flex items-center justify-between text-sm">
-                  <span className="font-semibold">
-                    {formatBytes(stats.storageUsed)}
-                  </span>
-
-                  <span className="text-[var(--text-muted)]">
-                    {formatBytes(stats.storageQuota)}
-                  </span>
-                </div>
-
-                <div
-                  className="
-    h-3 overflow-hidden
-    rounded-full
-    bg-gray-200/70
-    backdrop-blur-sm
-
-    dark:bg-gray-800
-  "
-                >
-                  <div
-                    className="
-                      h-full rounded-full
-                      bg-gradient-to-r
-                     from-orange-500
-via-orange-400
-to-amber-400
-                      transition-all duration-500
-                    "
-                    style={{
-                      width: `${usedPct}%`,
-                    }}
-                  />
-                </div>
-
-                <p className="mt-3 text-xs text-[var(--text-muted)]">
-                  {usedPct.toFixed(1)}% of quota used
-                </p>
-              </Card>
-
-              {/* ACTIVITY */}
-
-              <Card hover glass padding>
-                <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4 dark:border-gray-700">
-                  <h3 className="text-lg font-semibold">Recent Activity</h3>
-
-                  <Link
-                    href="/transactions"
-                    className="
-                      text-sm text-orange-500
-                      hover:text-orange-600
-                    "
-                  >
-                    View all
-                  </Link>
-                </div>
-
-                {transactions.length === 0 ? (
-                  <div className="px-6 py-10 text-center text-sm text-[var(--text-muted)]">
-                    No activity yet
-                  </div>
-                ) : (
-                  <div className="divide-y divide-gray-200 dark:divide-gray-700">
-                    {transactions.map((tx) => (
-                      <div
-                        key={tx.id}
-                        className="flex items-center gap-3 px-5 py-4"
-                      >
-                        <div
-                          className="
-                              flex h-10 w-10
-                              items-center justify-center
-                             rounded-2xl shadow-sm
-                              bg-gray-100
-                              dark:bg-gray-800
-                            "
-                        >
-                          {txIcons[tx.type] || "•"}
-                        </div>
-
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-medium">
-                            {tx.type.charAt(0).toUpperCase() + tx.type.slice(1)}
-
-                            {tx.file && `: ${tx.file.name}`}
-                          </p>
-
-                          <p className="text-xs text-[var(--text-muted)]">
-                            {formatRelative(tx.createdAt)}
-                          </p>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </Card>
-            </div>
-          </div>
         </div>
       </DashboardLayout>
     </AuthGuard>

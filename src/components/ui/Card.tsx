@@ -1,251 +1,204 @@
-'use client';
+"use client";
 
-import React from 'react';
+import { type ReactNode, type HTMLAttributes } from "react";
+import { cn } from "@/lib/utils";
 
-interface CardProps
-  extends React.HTMLAttributes<HTMLDivElement> {
-  children: React.ReactNode;
-  className?: string;
+/* =========================================================
+   TYPES
+========================================================= */
+
+interface CardProps extends HTMLAttributes<HTMLDivElement> {
+  children: ReactNode;
   hover?: boolean;
   glass?: boolean;
-  padding?: boolean;
   glow?: boolean;
+  padding?: boolean;
+  bordered?: boolean;
+  blur?: boolean;
+  size?: "sm" | "md" | "lg";
+  gradient?: boolean;
 }
 
-/* =========================
-   MAIN CARD
-========================= */
+/* =========================================================
+   CARD
+========================================================= */
 
 const Card = ({
   children,
-  className = '',
+  className = "",
   hover = false,
   glass = false,
-  padding = false,
   glow = false,
+  padding = false,
+  bordered = true,
+  blur = true,
+  size = "md",
+  gradient = false,
   ...props
 }: CardProps) => {
+  const sizes = {
+    sm: "rounded-2xl",
+    md: "rounded-3xl",
+    lg: "rounded-[2rem]",
+  };
+
   return (
     <div
       {...props}
-      className={`
-        group
-        relative overflow-hidden
-        rounded-3xl
-        border
-        transition-all duration-300 ease-out
+      className={cn(
+        "group relative overflow-hidden isolate transition-all duration-300 ease-in-out shadow-sm shadow-black/3 dark:shadow-black/20",
+        sizes[size],
 
-        ${
-          glass
-            ? `
-              bg-white/70
-              backdrop-blur-2xl
-              border-white/20
+        glass
+          ? cn(
+              "bg-white/70 dark:bg-zinc-900/60",
+              blur && "backdrop-blur-2xl",
+              bordered && "border border-white/20 dark:border-white/10",
+            )
+          : cn(
+              "bg-white/95 dark:bg-zinc-900/95",
+              bordered && "border border-gray-200/80 dark:border-zinc-800",
+            ),
 
-              dark:bg-zinc-900/60
-              dark:border-white/10
-            `
-            : `
-              bg-white/95
-              border-gray-200/80
+        hover &&
+          "hover:-translate-y-1.5 hover:shadow-2xl hover:shadow-orange-500/10 hover:border-orange-300/70 dark:hover:border-orange-700/60",
 
-              dark:bg-zinc-900/95
-              dark:border-zinc-800
-            `
-        }
+        glow &&
+          "before:absolute before:inset-0 before:bg-linear-to-br before:from-orange-500/[0.07] before:via-transparent before:to-transparent before:pointer-events-none",
 
-        ${
-          hover
-            ? `
-              hover:-translate-y-1.5
-              hover:shadow-2xl
-              hover:shadow-orange-500/10
-              hover:border-orange-300/70
+        gradient &&
+          "after:absolute after:inset-0 after:bg-linear-to-br after:from-white/2 after:via-transparent after:to-orange-500/3 after:pointer-events-none",
 
-              dark:hover:border-orange-700/60
-            `
-            : ''
-        }
+        padding && (size === "sm" ? "p-4" : size === "lg" ? "p-8" : "p-6"),
 
-        ${
-          glow
-            ? `
-              before:absolute
-              before:inset-0
-              before:bg-gradient-to-br
-              before:from-orange-500/5
-              before:via-transparent
-              before:to-transparent
-              before:pointer-events-none
-            `
-            : ''
-        }
-
-        ${
-          padding ? 'p-6' : ''
-        }
-
-        shadow-sm shadow-black/[0.03]
-        dark:shadow-black/20
-
-        ${className}
-      `}
+        className,
+      )}
     >
-      {/* subtle top glow */}
-      <div
-        className="
-          pointer-events-none
-          absolute inset-x-0 top-0 h-px
-          bg-gradient-to-r
-          from-transparent
-          via-white/60
-          to-transparent
-          dark:via-white/10
-        "
-      />
+      {/* Top shine */}
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-linear-to-r from-transparent via-white/60 to-transparent dark:via-white/10" />
 
-      {children}
+      {/* Hover light */}
+      <div className="pointer-events-none absolute inset-0 opacity-0 transition-opacity duration-300 group-hover:opacity-100 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.08),transparent_60%)]" />
+
+      <div className="relative z-10">{children}</div>
     </div>
   );
 };
 
-/* =========================
+/* =========================================================
    HEADER
-========================= */
+========================================================= */
 
-export const CardHeader = ({
-  children,
-  className = '',
-}: {
-  children: React.ReactNode;
-  className?: string;
-}) => {
-  return (
-    <div
-      className={`
-        flex items-center justify-between
-        px-6 py-5
+interface SectionProps extends HTMLAttributes<HTMLDivElement> {
+  children: ReactNode;
+}
 
-        border-b border-gray-100
-        dark:border-zinc-800
+export const CardHeader = ({ children, className = "", ...props }: SectionProps) => (
+  <div
+    {...props}
+    className={cn(
+      "flex items-center justify-between gap-4 px-6 py-5 border-b border-gray-100 dark:border-zinc-800",
+      className,
+    )}
+  >
+    {children}
+  </div>
+);
 
-        ${className}
-      `}
-    >
-      {children}
-    </div>
-  );
-};
-
-/* =========================
+/* =========================================================
    TITLE
-========================= */
+========================================================= */
 
-export const CardTitle = ({
-  children,
-  className = '',
-}: {
-  children: React.ReactNode;
-  className?: string;
-}) => {
-  return (
-    <h3
-      className={`
-        text-lg font-semibold tracking-tight
-        text-gray-900
-        dark:text-white
+interface CardTitleProps extends HTMLAttributes<HTMLHeadingElement> {
+  children: ReactNode;
+  gradient?: boolean;
+}
 
-        ${className}
-      `}
-    >
-      {children}
-    </h3>
-  );
-};
+export const CardTitle = ({ children, className = "", gradient = false, ...props }: CardTitleProps) => (
+  <h3
+    {...props}
+    className={cn(
+      "text-lg font-semibold tracking-tight text-gray-900 dark:text-white",
+      gradient && "bg-linear-to-r from-orange-500 to-amber-500 bg-clip-text text-transparent",
+      className,
+    )}
+  >
+    {children}
+  </h3>
+);
 
-/* =========================
+/* =========================================================
    DESCRIPTION
-========================= */
+========================================================= */
 
-export const CardDescription = ({
-  children,
-  className = '',
-}: {
-  children: React.ReactNode;
-  className?: string;
-}) => {
-  return (
-    <p
-      className={`
-        mt-1 text-sm leading-relaxed
-        text-gray-500
-        dark:text-gray-400
+interface CardDescriptionProps extends HTMLAttributes<HTMLParagraphElement> {
+  children: ReactNode;
+}
 
-        ${className}
-      `}
-    >
-      {children}
-    </p>
-  );
-};
+export const CardDescription = ({ children, className = "", ...props }: CardDescriptionProps) => (
+  <p
+    {...props}
+    className={cn("mt-1 text-sm leading-relaxed text-gray-500 dark:text-gray-400", className)}
+  >
+    {children}
+  </p>
+);
 
-/* =========================
+/* =========================================================
    BODY
-========================= */
+========================================================= */
 
-export const CardBody = ({
-  children,
-  className = '',
-}: {
-  children: React.ReactNode;
-  className?: string;
-}) => {
-  return (
-    <div
-      className={`
-        px-6 py-5
+export const CardBody = ({ children, className = "", ...props }: SectionProps) => (
+  <div {...props} className={cn("px-6 py-5", className)}>
+    {children}
+  </div>
+);
 
-        ${className}
-      `}
-    >
-      {children}
-    </div>
-  );
-};
-
-/* =========================
+/* =========================================================
    FOOTER
-========================= */
+========================================================= */
 
-export const CardFooter = ({
-  children,
-  className = '',
-}: {
-  children: React.ReactNode;
-  className?: string;
-}) => {
-  return (
-    <div
-      className={`
-        flex items-center justify-between
-        gap-3
+export const CardFooter = ({ children, className = "", ...props }: SectionProps) => (
+  <div
+    {...props}
+    className={cn(
+      "flex items-center justify-between gap-3 px-6 py-4 border-t border-gray-100 dark:border-zinc-800 bg-gray-50/70 dark:bg-zinc-900/50 backdrop-blur-sm",
+      className,
+    )}
+  >
+    {children}
+  </div>
+);
 
-        px-6 py-4
+/* =========================================================
+   MEDIA
+========================================================= */
 
-        border-t border-gray-100
-        dark:border-zinc-800
+interface CardMediaProps extends HTMLAttributes<HTMLDivElement> {
+  src: string;
+  alt?: string;
+  height?: string;
+}
 
-        bg-gray-50/70
-        dark:bg-zinc-900/50
+export const CardMedia = ({ src, alt = "card-image", className = "", height = "h-52", ...props }: CardMediaProps) => (
+  <div {...props} className={cn("relative overflow-hidden", height, className)}>
+    <img
+      src={src}
+      alt={alt}
+      className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
+    />
+    <div className="absolute inset-0 bg-linear-to-t from-black/20 to-transparent" />
+  </div>
+);
 
-        backdrop-blur-sm
+/* =========================================================
+   ACTIONS
+========================================================= */
 
-        ${className}
-      `}
-    >
-      {children}
-    </div>
-  );
-};
+export const CardActions = ({ children, className = "", ...props }: SectionProps) => (
+  <div {...props} className={cn("flex items-center gap-2", className)}>
+    {children}
+  </div>
+);
 
 export default Card;

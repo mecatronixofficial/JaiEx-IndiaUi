@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from "react";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   Bell,
   Settings,
@@ -22,13 +22,24 @@ import {
   HelpCircle,
   ChevronDown,
   FolderPlus,
-  FileUp,
+  FileText,
   Grid3x3,
   List,
+  Loader2,
+  AlertTriangle,
+  Menu,
+  HardDrive,
+  FolderOpen,
+  Link2,
+  QrCode,
+  Mail,
+  ArrowLeftRight,
+  LayoutDashboard,
 } from "lucide-react";
-import { notificationsApi } from "@/lib/api";
+
+import { notificationsApi, searchApi } from "@/lib/api";
+import { formatBytes, formatRelative } from "@/lib/utils";
 import { Notification } from "@/types";
-import { formatRelative } from "@/lib/utils";
 import { Avatar } from "@/components/ui";
 import { useAuth } from "@/contexts/AuthContext";
 import { useTheme } from "@/contexts/ThemeContext";
@@ -36,628 +47,927 @@ import { useDebounce } from "@/hooks/useDebounce";
 import { showToast } from "@/lib/toast";
 import Button from "../ui/Button";
 
-export default function Header() {
+/* =========================
+   TYPES
+========================= */
+
+interface SearchResult {
+  id: number | string;
+  type: "file" | "folder" | "user";
+  name: string;
+  path?: string;
+  email?: string;
+}
+
+interface HeaderProps {
+  onMobileSidebarOpen?: () => void;
+  onUpload?: () => void;
+  storageUsed?: number;
+  storageQuota?: number;
+  storageLoading?: boolean;
+}
+
+/* =========================
+   CONSTANTS
+========================= */
+
+const NOTIF_POLL_INTERVAL_MS = 30_000;
+const CLOCK_TICK_MS = 30_000;
+
+const NOTIF_ICONS: Record<string, ReactNode> = {
+  share:       <Share2 size={15} />,
+  upload:      <Upload size={15} />,
+  download:    <Download size={15} />,
+  system:      <Sparkles size={15} />,
+  user:        <Users size={15} />,
+  achievement: <Award size={15} />,
+};
+
+const NOTIF_ACCENT: Record<string, { icon: string; dot: string; bg: string }> = {
+  share:       { icon: "bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400",       dot: "bg-blue-500",   bg: "border-l-2 border-l-blue-400" },
+  upload:      { icon: "bg-green-100 text-green-600 dark:bg-green-900/30 dark:text-green-400",   dot: "bg-green-500",  bg: "border-l-2 border-l-green-400" },
+  download:    { icon: "bg-purple-100 text-purple-600 dark:bg-purple-900/30 dark:text-purple-400", dot: "bg-purple-500", bg: "border-l-2 border-l-purple-400" },
+  system:      { icon: "bg-orange-100 text-orange-600 dark:bg-orange-900/30 dark:text-orange-400", dot: "bg-orange-500", bg: "border-l-2 border-l-orange-400" },
+  achievement: { icon: "bg-amber-100 text-amber-600 dark:bg-amber-900/30 dark:text-amber-400",   dot: "bg-amber-500",  bg: "border-l-2 border-l-amber-400" },
+  default:     { icon: "bg-gray-100 text-gray-500 dark:bg-zinc-800 dark:text-gray-400",          dot: "bg-gray-400",   bg: "border-l-2 border-l-gray-300 dark:border-l-zinc-600" },
+};
+
+const USER_MENU_ITEMS = [
+  { href: "/profile",  icon: User,        label: "My Profile" },
+  { href: "/settings", icon: Settings,    label: "Settings" },
+  { href: "/help",     icon: HelpCircle,  label: "Help & Support" },
+] as const;
+
+/* =========================
+   HELPERS
+========================= */
+
+function formatRelativeTime(date: string | Date | number): string {
+  return formatRelative(typeof date === "number" ? new Date(date) : date) || "Unknown time";
+}
+
+function formatFullTime(date: string | Date | number): string {
+  const d = new Date(date);
+  if (isNaN(d.getTime())) return "";
+  return new Intl.DateTimeFormat("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(d);
+}
+
+function getGreeting(): { label: string; icon: ReactNode } {
+  const hour = new Date().getHours();
+  if (hour === 0)  return { label: "Hey Midnight",   icon: <Moon size={13} className="text-indigo-400" /> };
+  if (hour < 12)   return { label: "Good Morning",   icon: <Sun  size={13} className="text-amber-400" /> };
+  if (hour < 17)   return { label: "Good Afternoon", icon: <Sun  size={13} className="text-orange-400" /> };
+  if (hour < 21)   return { label: "Good Evening",   icon: <Moon size={13} className="text-orange-300" /> };
+  return             { label: "Good Night",           icon: <Moon size={13} className="text-blue-400" /> };
+}
+
+function getTime(): string {
+  return new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+}
+
+function readArray(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value as Record<string, unknown>[] : [];
+}
+
+function readString(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function getRouteContext(pathname: string, type: string | null): { title: string; subtitle: string; icon: ReactNode } {
+  if (pathname === "/dashboard") return { title: "Dashboard", subtitle: "Workspace overview", icon: <LayoutDashboard size={15} /> };
+  if (pathname === "/files") {
+    const labels: Record<string, string> = {
+      document: "Documents",
+      image: "Images",
+      video: "Videos",
+      spreadsheet: "Spreadsheets",
+    };
+    return { title: labels[type ?? ""] ?? "Files", subtitle: type ? "Filtered library" : "All storage files", icon: <FileText size={15} /> };
+  }
+  if (pathname === "/folders") return { title: "Folders", subtitle: "Organized project storage", icon: <FolderOpen size={15} /> };
+  if (pathname === "/links") {
+    if (type === "qr") return { title: "QR Shares", subtitle: "QR-based shared access", icon: <QrCode size={15} /> };
+    if (type === "email") return { title: "Email Shares", subtitle: "Email delivery links", icon: <Mail size={15} /> };
+    return { title: "Shared Links", subtitle: "Link-based shared access", icon: <Link2 size={15} /> };
+  }
+  if (pathname.startsWith("/transfers")) return { title: "Transfers", subtitle: "Send and receive files", icon: <ArrowLeftRight size={15} /> };
+  if (pathname.startsWith("/admin")) return { title: "Administration", subtitle: "Platform management", icon: <Settings size={15} /> };
+  if (pathname.startsWith("/superadmin")) return { title: "System", subtitle: "Super admin controls", icon: <AlertTriangle size={15} /> };
+  return { title: "Jai Export", subtitle: "File Transfer", icon: <Sparkles size={15} /> };
+}
+
+/* =========================
+   ICON BUTTON
+========================= */
+function IconBtn({
+  onClick, label, children, className = "",
+}: {
+  onClick?: () => void;
+  label: string;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      className={`relative flex h-9 w-9 items-center justify-center rounded-xl text-gray-500 transition-all duration-200 hover:bg-gray-100 hover:text-orange-500 dark:text-gray-400 dark:hover:bg-zinc-800/80 dark:hover:text-orange-400 ${className}`}
+    >
+      {children}
+    </button>
+  );
+}
+
+/* =========================
+   COMPONENT
+========================= */
+
+export default function Header({
+  onMobileSidebarOpen,
+  onUpload,
+  storageUsed = 0,
+  storageQuota = 0,
+  storageLoading = false,
+}: HeaderProps) {
   const { user, logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
-  const pathname = usePathname();
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
 
-  const [notifs, setNotifs] = useState<Notification[]>([]);
-  const [showNotifs, setShowNotifs] = useState(false);
-  const [showSearch, setShowSearch] = useState(false);
+  const [notifs, setNotifs]           = useState<Notification[]>([]);
+  const [showNotifs, setShowNotifs]   = useState(false);
+  const [showSearch, setShowSearch]   = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [showLogoutModal, setShowLogoutModal] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const [searchResults, setSearchResults] = useState([]);
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
-  const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
+  const [viewMode, setViewMode]       = useState<"grid" | "list">(() => {
+    try {
+      const saved = localStorage.getItem("viewMode");
+      if (saved === "grid" || saved === "list") return saved;
+    } catch { /* ignore */ }
+    return "grid";
+  });
+  const [searchFocusIndex, setSearchFocusIndex] = useState(-1);
 
-  const notifRef = useRef<HTMLDivElement>(null);
-  const userMenuRef = useRef<HTMLDivElement>(null);
+  const [time, setTime]       = useState<string>("");
+  const [greeting, setGreeting] = useState<{ label: string; icon: ReactNode }>({ label: "", icon: null });
+
+  const notifRef      = useRef<HTMLDivElement>(null);
+  const userMenuRef   = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const debouncedSearch = useDebounce(searchQuery, 500);
+  const searchResultRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
+  const debouncedSearch = useDebounce(searchQuery, 400);
 
   /* =========================
-     UNREAD COUNT
+     DERIVED
   ========================= */
-  const unread = notifs.filter((n) => !n.isRead).length;
+  const unread = useMemo(() => notifs.filter((n) => !n.isRead).length, [notifs]);
+  const routeContext = useMemo(
+    () => getRouteContext(pathname, searchParams.get("type")),
+    [pathname, searchParams],
+  );
+  const storagePct = useMemo(() => {
+    if (!storageQuota || storageQuota <= 0) return 0;
+    return Math.min((storageUsed / storageQuota) * 100, 100);
+  }, [storageUsed, storageQuota]);
+  const firstName = useMemo(
+    () => (user?.name ?? user?.email ?? "User").split(/\s+/)[0],
+    [user?.name, user?.email],
+  );
+
+  /* =========================
+     CLOCK + GREETING
+  ========================= */
+  useEffect(() => {
+    const update = () => { setTime(getTime()); setGreeting(getGreeting()); };
+    update();
+    const id = setInterval(update, CLOCK_TICK_MS);
+    return () => clearInterval(id);
+  }, []);
 
   /* =========================
      LOAD NOTIFICATIONS
   ========================= */
-  useEffect(() => {
-    loadNotifications();
-    const interval = setInterval(loadNotifications, 30000);
-    return () => clearInterval(interval);
-  }, []);
-
-  // Close dropdowns when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (
-        notifRef.current &&
-        !notifRef.current.contains(event.target as Node)
-      ) {
-        setShowNotifs(false);
-      }
-      if (
-        userMenuRef.current &&
-        !userMenuRef.current.contains(event.target as Node)
-      ) {
-        setShowUserMenu(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
-
-  // Keyboard shortcuts
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Cmd/Ctrl + K for search
-      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
-        e.preventDefault();
-        setShowSearch(true);
-        setTimeout(() => searchInputRef.current?.focus(), 100);
-      }
-      // Escape to close modals
-      if (e.key === "Escape") {
-        if (showSearch) setShowSearch(false);
-        if (showNotifs) setShowNotifs(false);
-        if (showUserMenu) setShowUserMenu(false);
-      }
-      // Cmd/Ctrl + N for new notification (demo)
-      if ((e.metaKey || e.ctrlKey) && e.key === "n") {
-        e.preventDefault();
-        // Trigger notification refresh
-        loadNotifications();
-      }
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [showSearch, showNotifs, showUserMenu]);
-
-  // Search effect
-  useEffect(() => {
-    if (debouncedSearch) {
-      performSearch();
-    } else {
-      setSearchResults([]);
-    }
-  }, [debouncedSearch]);
-
-  async function loadNotifications() {
+  const loadNotifications = useCallback(async () => {
     try {
       const res = await notificationsApi.list();
-      const data = res.data?.data || [];
+      const data = res.data?.data ?? res.data ?? [];
       setNotifs(Array.isArray(data) ? data : []);
-    } catch {
-      setNotifs([]);
-    }
-  }
+    } catch { /* Silent */ }
+  }, []);
 
-  async function performSearch() {
+  useEffect(() => {
+    let mounted = true;
+    const tick = async () => { if (mounted) await loadNotifications(); };
+    tick();
+    const id = setInterval(tick, NOTIF_POLL_INTERVAL_MS);
+    return () => { mounted = false; clearInterval(id); };
+  }, [loadNotifications]);
+
+  /* =========================
+     CLICK-OUTSIDE
+  ========================= */
+  useEffect(() => {
+    const handle = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (notifRef.current && !notifRef.current.contains(t)) setShowNotifs(false);
+      if (userMenuRef.current && !userMenuRef.current.contains(t)) setShowUserMenu(false);
+    };
+    document.addEventListener("mousedown", handle);
+    return () => document.removeEventListener("mousedown", handle);
+  }, []);
+
+  /* =========================
+     KEYBOARD SHORTCUTS
+  ========================= */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setShowSearch(true);
+        setSearchFocusIndex(-1);
+        setTimeout(() => searchInputRef.current?.focus(), 50);
+        return;
+      }
+      if (e.key === "Escape") {
+        if (showSearch)       { setShowSearch(false); setSearchQuery(""); setSearchFocusIndex(-1); return; }
+        if (showNotifs)       return setShowNotifs(false);
+        if (showUserMenu)     return setShowUserMenu(false);
+        if (showLogoutModal)  return setShowLogoutModal(false);
+      }
+      if (showSearch && searchResults.length > 0) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setSearchFocusIndex((i) => { const n = Math.min(i + 1, searchResults.length - 1); searchResultRefs.current[n]?.focus(); return n; });
+        } else if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setSearchFocusIndex((i) => { if (i <= 0) { searchInputRef.current?.focus(); return -1; } searchResultRefs.current[i - 1]?.focus(); return i - 1; });
+        }
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [showSearch, showNotifs, showUserMenu, showLogoutModal, searchResults.length]);
+
+  /* =========================
+     BODY SCROLL LOCK
+  ========================= */
+  useEffect(() => {
+    if (!showLogoutModal) return;
+    const orig = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = orig; };
+  }, [showLogoutModal]);
+
+  /* =========================
+     SEARCH
+  ========================= */
+  const performSearch = useCallback(async (q: string) => {
     setIsSearching(true);
     try {
-      // Implement search API call
-      // const res = await searchApi.search(searchQuery);
-      // setSearchResults(res.data);
-
-      // Mock results for demo
-      setSearchResults([
-        {
-          id: 1,
-          type: "file",
-          name: "Quarterly Report.pdf",
-          path: "/documents",
-        },
-        { id: 2, type: "folder", name: "Project Files", path: "/projects" },
-        { id: 3, type: "user", name: "John Doe", email: "john@example.com" },
-      ]);
-    } catch (error) {
-      console.error("Search error:", error);
+      const res = await searchApi.search(q, { limit: 10 });
+      const raw = (res.data?.data ?? res.data ?? {}) as Record<string, unknown>;
+      const results: SearchResult[] = [];
+      readArray(raw.files).forEach((f) => results.push({
+        id: readString(f._id) || readString(f.id),
+        type: "file",
+        name: readString(f.fileName) || readString(f.name) || readString(f.originalName),
+        path: readString(f.path) || readString(f.folderId) || "/",
+      }));
+      readArray(raw.folders).forEach((f) => results.push({
+        id: readString(f._id) || readString(f.id),
+        type: "folder",
+        name: readString(f.name),
+        path: readString(f.path) || readString(f.parentId) || "/",
+      }));
+      readArray(raw.users).forEach((u) => results.push({
+        id: readString(u._id) || readString(u.id),
+        type: "user",
+        name: readString(u.name) || readString(u.email),
+        email: readString(u.email),
+      }));
+      setSearchResults(results);
+    } catch {
+      setSearchResults([]);
     } finally {
       setIsSearching(false);
     }
-  }
+  }, []);
 
-  async function markRead(id: string) {
+  useEffect(() => {
+    searchResultRefs.current = [];
+    const q = debouncedSearch.trim();
+    Promise.resolve().then(() => {
+      if (q) performSearch(q);
+      else setSearchResults([]);
+    });
+  }, [debouncedSearch, performSearch]);
+
+  const openSearch = useCallback(() => {
+    setShowSearch(true);
+    setSearchFocusIndex(-1);
+    setTimeout(() => searchInputRef.current?.focus(), 50);
+  }, []);
+
+  const closeSearch = useCallback(() => {
+    setShowSearch(false);
+    setSearchQuery("");
+    setSearchFocusIndex(-1);
+  }, []);
+
+  /* =========================
+     NOTIF ACTIONS
+  ========================= */
+  const markRead = useCallback(async (id: string) => {
+    setNotifs((prev) => prev.map((n) => (n.id === id ? { ...n, isRead: true } : n)));
     try {
       await notificationsApi.markRead(id);
-      setNotifs((prev) =>
-        prev.map((n) => (n.id === id ? { ...n, isRead: true } : n)),
-      );
-      showToast.success("Marked as read");
     } catch {
+      setNotifs((prev) => prev.map((n) => (n.id === id ? { ...n, isRead: false } : n)));
       showToast.error("Failed to mark as read");
     }
-  }
+  }, []);
 
-  async function markAllRead() {
+  const markAllRead = useCallback(async () => {
+    const snapshot = notifs.slice();
+    setNotifs((prev) => prev.map((n) => ({ ...n, isRead: true })));
     try {
       await notificationsApi.markAllRead();
-      setNotifs((prev) => prev.map((n) => ({ ...n, isRead: true })));
       showToast.success("All notifications marked as read");
     } catch {
+      setNotifs(snapshot);
       showToast.error("Failed to mark all as read");
     }
-  }
+  }, [notifs]);
 
-  const handleLogout = async () => {
+  /* =========================
+     LOGOUT
+  ========================= */
+  const handleLogout = useCallback(async () => {
+    setShowLogoutModal(false);
+    setShowUserMenu(false);
     try {
       await logout();
-      router.push("/login");
       showToast.success("Logged out successfully");
-    } catch (error) {
+    } catch {
       showToast.error("Failed to logout");
     }
-  };
+  }, [logout]);
 
-  const notifIcons: Record<string, React.ReactNode> = {
-    share: <Share2 size={16} />,
-    upload: <Upload size={16} />,
-    download: <Download size={16} />,
-    system: <Sparkles size={16} />,
-    user: <Users size={16} />,
-    achievement: <Award size={16} />,
-  };
-
-  const getNotifGradient = (type: string, isRead: boolean) => {
-    if (isRead) return "bg-gray-50 dark:bg-gray-900";
-    switch (type) {
-      case "share":
-        return "bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-950/30 dark:to-indigo-950/30";
-      case "upload":
-        return "bg-gradient-to-r from-green-50 to-emerald-50 dark:from-green-950/30 dark:to-emerald-950/30";
-      case "download":
-        return "bg-gradient-to-r from-purple-50 to-pink-50 dark:from-purple-950/30 dark:to-pink-950/30";
-      case "system":
-        return "bg-gradient-to-r from-orange-50 to-amber-50 dark:from-orange-950/30 dark:to-amber-950/30";
-      default:
-        return "bg-gradient-to-r from-gray-50 to-gray-100 dark:from-gray-900 dark:to-gray-800";
-    }
-  };
-
-  // Save view mode preference
-  const handleViewModeChange = (mode: "grid" | "list") => {
+  /* =========================
+     VIEW MODE
+  ========================= */
+  const handleViewModeChange = useCallback((mode: "grid" | "list") => {
     setViewMode(mode);
-    localStorage.setItem("viewMode", mode);
-    // Dispatch event for other components
+    try { localStorage.setItem("viewMode", mode); } catch { /* ignore */ }
     window.dispatchEvent(new CustomEvent("viewModeChange", { detail: mode }));
-  };
+  }, []);
 
+  /* =========================
+     SEARCH NAV
+  ========================= */
+  const navigateSearchResult = useCallback((result: SearchResult) => {
+    if (result.type === "file") router.push(`/files?search=${encodeURIComponent(result.name)}`);
+    else if (result.type === "folder") router.push(`/folders?search=${encodeURIComponent(result.name)}`);
+    else router.push(`/admin/users?search=${encodeURIComponent(result.email ?? result.name)}`);
+    closeSearch();
+  }, [router, closeSearch]);
+
+  /* =========================
+     NOTIF ACCENT HELPER
+  ========================= */
+  const getAccent = (type: string) => NOTIF_ACCENT[type] ?? NOTIF_ACCENT.default;
+
+  /* =========================
+     RENDER
+  ========================= */
   return (
     <>
-      <header className="sticky top-0 z-40 flex h-16 items-center justify-between gap-3 border-b border-gray-200 bg-white/80 px-4 backdrop-blur-xl transition-all duration-200 dark:border-gray-800 dark:bg-black/80 sm:px-6">
-        {/* Left side - Logo/Brand (optional) */}
-        <div className="flex items-center gap-4">
-          <Link href="/dashboard" className="flex items-center gap-2">
-            <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-orange-500 to-red-500 flex items-center justify-center">
-              <span className="text-white font-bold text-sm">FM</span>
-            </div>
-            <span className="font-semibold text-gray-900 dark:text-white hidden sm:inline">
-              FileManager
-            </span>
-          </Link>
+      <header className="sticky top-0 z-40 flex h-16 items-center justify-between gap-3 border-b border-gray-200/70 bg-white/80 px-4 backdrop-blur-xl transition-colors duration-200 dark:border-zinc-800/60 dark:bg-zinc-950/80 sm:px-6">
 
-          {/* View Toggle (optional) */}
-          <div className="hidden lg:flex items-center gap-1 ml-4 rounded-lg border border-gray-200 dark:border-gray-700 p-1">
-            <Button
-              variant={viewMode === "grid" ? "primary" : "ghost"}
-              size="icon"
-              className="rounded-lg"
-              onClick={() => handleViewModeChange("grid")}
-            >
-              <Grid3x3 size={16} />
-            </Button>
-            <Button
-              variant={viewMode === "list" ? "primary" : "ghost"}
-              size="icon"
-              className="rounded-lg"
-              onClick={() => handleViewModeChange("list")}
-            >
-              <List size={16} />
-            </Button>
+        {/* ── LEFT ── */}
+        <div className="flex items-center gap-2.5">
+          {/* Mobile hamburger */}
+          <button
+            type="button"
+            onClick={onMobileSidebarOpen}
+            className="flex h-9 w-9 items-center justify-center rounded-xl text-gray-500 transition-colors hover:bg-gray-100 hover:text-orange-500 dark:text-gray-400 dark:hover:bg-zinc-800 lg:hidden"
+            aria-label="Open navigation menu"
+          >
+            <Menu size={19} />
+          </button>
+
+          {/* Current project area */}
+          <div className="hidden min-w-0 items-center gap-2 rounded-xl border border-gray-200/70 bg-gray-50/60 px-2.5 py-1.5 dark:border-zinc-800 dark:bg-zinc-900/60 sm:flex">
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-orange-50 text-orange-500 dark:bg-orange-500/10 dark:text-orange-400">
+              {routeContext.icon}
+            </span>
+            <span className="min-w-0">
+              <span className="block truncate text-[12px] font-bold leading-none text-gray-900 dark:text-white">
+                {routeContext.title}
+              </span>
+              <span className="mt-0.5 block truncate text-[10px] text-gray-400 dark:text-gray-500">
+                {routeContext.subtitle}
+              </span>
+            </span>
           </div>
+
+          {/* View mode toggle — desktop */}
+          <div
+            className="hidden items-center gap-0.5 rounded-xl border border-gray-200/80 bg-gray-50/60 p-0.5 dark:border-zinc-800 dark:bg-zinc-900/60 lg:flex"
+            role="group"
+            aria-label="View mode"
+          >
+            {(["grid", "list"] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => handleViewModeChange(mode)}
+                className={`flex h-7 w-7 items-center justify-center rounded-[9px] transition-all duration-200 ${
+                  viewMode === mode
+                    ? "bg-orange-500 text-white shadow-sm shadow-orange-500/30"
+                    : "text-gray-500 hover:bg-white hover:text-gray-700 hover:shadow-sm dark:hover:bg-zinc-800 dark:hover:text-gray-300"
+                }`}
+                aria-label={`${mode === "grid" ? "Grid" : "List"} view`}
+                aria-pressed={viewMode === mode}
+              >
+                {mode === "grid" ? <Grid3x3 size={14} /> : <List size={14} />}
+              </button>
+            ))}
+          </div>
+
+          {/* Greeting + time — xl only */}
+          {greeting.label && (
+            <div className="hidden items-center gap-2 border-l border-gray-200/80 pl-3 dark:border-zinc-800 xl:flex">
+              <span aria-hidden>{greeting.icon}</span>
+              <span className="text-[13px] font-medium text-gray-700 dark:text-gray-200">
+                {greeting.label}, {firstName}
+              </span>
+              <span className="text-gray-300 dark:text-zinc-600">·</span>
+              <time
+                suppressHydrationWarning
+                className="font-mono text-[11px] tabular-nums text-gray-400 dark:text-gray-500"
+              >
+                {time}
+              </time>
+            </div>
+          )}
         </div>
 
-        {/* Right side actions */}
-        <div className="flex items-center gap-2">
-          {/* Search Bar */}
-          <div className="hidden md:block w-80">
-            <div className="relative group">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400 transition-colors duration-200 group-hover:text-orange-500 dark:text-gray-500" />
-              <input
-                type="text"
-                placeholder="Search files, folders, or people..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="h-10 w-full rounded-xl border border-gray-200 bg-gray-50 pl-9 pr-12 text-sm text-gray-900 placeholder:text-gray-400 transition-all duration-200 focus:border-orange-500 focus:outline-none focus:ring-2 focus:ring-orange-500/20 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500"
-              />
-              <kbd className="absolute right-3 top-1/2 hidden -translate-y-1/2 items-center gap-0.5 rounded border border-gray-200 bg-white px-1.5 py-0.5 text-[10px] font-medium text-gray-400 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-500 sm:flex">
-                <span className="text-xs">⌘</span>
-                <span>K</span>
-              </kbd>
-            </div>
+        {/* ── RIGHT ── */}
+        <div className="flex items-center gap-1.5">
+
+          {/* Search — desktop */}
+          <button
+            type="button"
+            onClick={openSearch}
+            className="group hidden h-9 w-64 items-center gap-2.5 rounded-xl border border-gray-200/80 bg-gray-50/50 px-3 text-[13px] text-gray-400 transition-all duration-200 hover:border-orange-300/80 hover:bg-white hover:shadow-sm dark:border-zinc-800 dark:bg-zinc-900/50 dark:hover:border-orange-700/50 dark:hover:bg-zinc-900 md:flex xl:w-72"
+            aria-label="Open search"
+          >
+            <Search size={14} className="shrink-0 text-gray-400 transition-colors group-hover:text-orange-500" />
+            <span className="flex-1 text-left">Search {routeContext.title.toLowerCase()}, files…</span>
+            <kbd className="hidden items-center gap-0.5 rounded-md border border-gray-200/80 bg-white px-1.5 py-0.5 text-[9px] font-medium text-gray-400 shadow-sm dark:border-zinc-700 dark:bg-zinc-800 dark:text-gray-500 sm:flex">
+              ⌘K
+            </kbd>
+          </button>
+
+          {/* Search — mobile */}
+          <IconBtn onClick={openSearch} label="Search" className="md:hidden">
+            <Search size={17} />
+          </IconBtn>
+
+          {/* Quick action */}
+          <IconBtn
+            onClick={onUpload}
+            label="Upload files"
+            className="hidden sm:flex"
+          >
+            <Upload size={17} />
+          </IconBtn>
+
+          {/* Storage — desktop */}
+          <div className="hidden items-center gap-2 rounded-xl border border-gray-200/80 bg-white px-2.5 py-1.5 dark:border-zinc-800 dark:bg-zinc-900 lg:flex">
+            <HardDrive size={14} className={storagePct >= 90 ? "text-red-500" : "text-orange-500"} />
+            {storageLoading ? (
+              <span className="h-3 w-16 animate-pulse rounded bg-gray-200 dark:bg-zinc-800" />
+            ) : (
+              <span className="text-[11px] font-semibold text-gray-600 dark:text-gray-300">
+                {storagePct.toFixed(0)}%
+                <span className="ml-1 font-normal text-gray-400">{formatBytes(storageUsed)}</span>
+              </span>
+            )}
           </div>
 
-          {/* Action Buttons */}
-          <div className="flex items-center gap-2">
-            {/* Quick Actions Dropdown */}
-            <div className="relative">
-              <Button
-                variant="icon"
-                size="icon"
-                onClick={() => {
-                  showToast.info?.("Quick actions coming soon");
-                }}
-              >
-                <FolderPlus size={18} />
-              </Button>
-            </div>
+          {/* Theme toggle */}
+          <IconBtn onClick={toggleTheme} label={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}>
+            {theme === "light"
+              ? <Sun  size={17} className="transition-transform hover:rotate-45" />
+              : <Moon size={17} className="transition-transform hover:-rotate-12" />}
+          </IconBtn>
 
-            {/* Theme Toggle */}
-            <Button
-              variant="icon"
-              size="icon"
-              onClick={toggleTheme}
-              aria-label="Toggle theme"
+          {/* ── NOTIFICATIONS ── */}
+          <div className="relative" ref={notifRef}>
+            <button
+              type="button"
+              onClick={() => setShowNotifs((s) => !s)}
+              className={`relative flex h-9 w-9 items-center justify-center rounded-xl transition-all duration-200 ${
+                showNotifs
+                  ? "bg-orange-50 text-orange-500 dark:bg-orange-500/10 dark:text-orange-400"
+                  : "text-gray-500 hover:bg-gray-100 hover:text-orange-500 dark:text-gray-400 dark:hover:bg-zinc-800/80 dark:hover:text-orange-400"
+              }`}
+              aria-label={`Notifications${unread > 0 ? `, ${unread} unread` : ""}`}
+              aria-expanded={showNotifs}
+              aria-haspopup="true"
             >
-              {theme === "light" ? (
-                <Sun
-                  size={18}
-                  className="transition-transform duration-300 group-hover:rotate-12"
-                />
-              ) : (
-                <Moon
-                  size={18}
-                  className="transition-transform duration-300 group-hover:-rotate-12"
-                />
+              <Bell size={17} />
+              {unread > 0 && (
+                <span className="absolute -right-0.5 -top-0.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-linear-to-br from-orange-500 to-red-500 px-1 text-[9px] font-bold leading-none text-white ring-2 ring-white shadow-sm shadow-orange-500/40 dark:ring-zinc-950">
+                  {unread > 9 ? "9+" : unread}
+                </span>
               )}
-            </Button>
-            {/* Notifications */}
-            <div className="relative" ref={notifRef}>
-              <Button
-                variant="icon"
-                size="icon"
-                className="relative"
-                onClick={() => setShowNotifs(!showNotifs)}
+            </button>
+
+            {/* Notification panel */}
+            {showNotifs && (
+              <div
+                className="absolute right-0 top-11 z-50 w-[22rem] max-w-[calc(100vw-1.5rem)] animate-in fade-in slide-in-from-top-2 overflow-hidden rounded-2xl border border-gray-200/80 bg-white shadow-2xl shadow-black/10 duration-150 dark:border-zinc-800/80 dark:bg-zinc-900 sm:w-[26rem]"
+                role="dialog"
                 aria-label="Notifications"
               >
-                <Bell size={18} />
+                {/* Panel header */}
+                <div className="flex items-center justify-between border-b border-gray-100/80 px-5 py-3.5 dark:border-zinc-800/80">
+                  <div>
+                    <h3 className="text-[13px] font-bold text-gray-900 dark:text-white">Notifications</h3>
+                    <p className="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400">
+                      {unread > 0
+                        ? `${unread} unread ${unread === 1 ? "message" : "messages"}`
+                        : "You're all caught up"}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {unread > 0 && (
+                      <button
+                        type="button"
+                        onClick={markAllRead}
+                        className="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-semibold text-orange-600 transition-colors hover:bg-orange-50 dark:text-orange-400 dark:hover:bg-orange-500/10"
+                      >
+                        <CheckCheck size={12} />
+                        Mark all read
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setShowNotifs(false)}
+                      className="flex h-7 w-7 items-center justify-center rounded-lg text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-zinc-800 dark:hover:text-gray-200"
+                      aria-label="Close notifications"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                </div>
 
-                {unread > 0 && (
-                  <span
-                    className="
-        absolute -right-1 -top-1
-        flex h-5 min-w-[20px]
-        items-center justify-center
-        rounded-full
-        bg-gradient-to-r from-orange-500 to-red-500
-        px-1 text-[10px]
-        font-bold text-white
-        shadow-lg
-      "
-                  >
-                    {unread > 9 ? "9+" : unread}
-                  </span>
-                )}
-              </Button>
-
-              {/* Notifications Dropdown */}
-              {showNotifs && (
-                <>
-                  <div
-                    className="fixed inset-0 z-40"
-                    onClick={() => setShowNotifs(false)}
-                  />
-                  <div className="absolute right-0 top-12 z-50 w-[420px] animate-in slide-in-from-top-2 fade-in duration-200 overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-900">
-                    {/* Header */}
-                    <div className="flex items-center justify-between border-b border-gray-100 bg-gradient-to-r from-gray-50 to-white px-5 py-4 dark:border-gray-800 dark:from-gray-900 dark:to-gray-900">
-                      <div>
-                        <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
-                          Notifications
-                        </h3>
-                        <p className="text-xs text-gray-500 dark:text-gray-400">
-                          Stay updated with your activity
-                        </p>
+                <div className="max-h-[26rem] overflow-y-auto scrollbar-hide">
+                  {notifs.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center px-6 py-12 text-center">
+                      <div className="mb-3.5 flex h-13 w-13 items-center justify-center rounded-2xl bg-gray-100 dark:bg-zinc-800">
+                        <Bell size={22} className="text-gray-400" />
                       </div>
-                      {unread > 0 && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={markAllRead}
-                          className="
-    text-orange-500
-    hover:bg-orange-50
-    dark:hover:bg-orange-500/10
-  "
-                        >
-                          <CheckCheck size={14} />
-                          Mark all read
-                        </Button>
-                      )}
+                      <p className="text-[13px] font-semibold text-gray-800 dark:text-white">No notifications yet</p>
+                      <p className="mt-1 text-[11px] text-gray-400 dark:text-gray-500">
+                        We&apos;ll notify you when something happens
+                      </p>
                     </div>
-
-                    {/* Notifications List */}
-                    <div className="max-h-[460px] overflow-y-auto custom-scrollbar">
-                      {notifs.length === 0 ? (
-                        <div className="flex flex-col items-center justify-center p-12 text-center animate-in fade-in duration-300">
-                          <div className="mb-4 rounded-full bg-gray-100 p-4 dark:bg-gray-800">
-                            <Bell size={32} className="text-gray-400" />
-                          </div>
-                          <p className="text-sm font-medium text-gray-900 dark:text-white">
-                            No notifications yet
-                          </p>
-                          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                            We&apos;ll notify you when something happens
-                          </p>
-                        </div>
-                      ) : (
-                        notifs.map((n, index) => (
-                          <div
-                            key={n.id}
-                            onClick={() => !n.isRead && markRead(n.id)}
-                            className={`relative cursor-pointer transition-all duration-200 hover:shadow-md ${getNotifGradient(
-                              n.type,
-                              n.isRead,
-                            )} border-b border-gray-100 dark:border-gray-800 ${
-                              !n.isRead ? "shadow-sm" : ""
-                            }`}
-                            style={{
-                              animationDelay: `${index * 30}ms`,
-                            }}
-                          >
-                            <div className="flex gap-3 px-5 py-4">
-                              {/* Icon */}
-                              <div
-                                className={`mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl transition-all duration-200 ${
-                                  !n.isRead
-                                    ? "bg-gradient-to-br from-orange-500 to-red-500 text-white shadow-md"
-                                    : "bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400"
-                                }`}
-                              >
-                                {notifIcons[n.type] || <Bell size={14} />}
-                              </div>
-
-                              {/* Content */}
-                              <div className="min-w-0 flex-1">
-                                <div className="flex items-start justify-between gap-2">
-                                  <h4
-                                    className={`truncate text-sm ${
-                                      n.isRead
-                                        ? "font-medium text-gray-700 dark:text-gray-300"
-                                        : "font-semibold text-gray-900 dark:text-white"
-                                    }`}
-                                  >
-                                    {n.title}
-                                  </h4>
-                                  {!n.isRead && (
-                                    <div className="mt-1.5 h-2 w-2 animate-pulse rounded-full bg-orange-500" />
-                                  )}
-                                </div>
-                                <p className="mt-1 text-xs leading-relaxed text-gray-600 dark:text-gray-400 line-clamp-2">
-                                  {n.message}
-                                </p>
-                                <p className="mt-2 text-[11px] text-gray-400 dark:text-gray-500">
-                                  {formatRelative(n.createdAt)}
-                                </p>
-                              </div>
+                  ) : (
+                    notifs.map((n) => {
+                      const accent = getAccent(n.type);
+                      return (
+                        <button
+                          type="button"
+                          key={n.id}
+                          onClick={() => !n.isRead && markRead(n.id)}
+                          className={`group w-full border-b border-gray-100/80 text-left transition-colors dark:border-zinc-800/60 ${
+                            !n.isRead
+                              ? `${accent.bg} hover:bg-gray-50 dark:hover:bg-zinc-800/50`
+                              : "hover:bg-gray-50 dark:hover:bg-zinc-800/30"
+                          }`}
+                          aria-label={`${n.isRead ? "" : "Unread: "}${n.title}`}
+                        >
+                          <div className="flex gap-3 px-4 py-3.5">
+                            <div
+                              className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl ${
+                                !n.isRead ? accent.icon : "bg-gray-100 text-gray-500 dark:bg-zinc-800 dark:text-gray-400"
+                              }`}
+                            >
+                              {NOTIF_ICONS[n.type] ?? <Bell size={14} />}
                             </div>
 
-                            {/* Animated border for unread */}
-                            {!n.isRead && (
-                              <div
-                                className="absolute bottom-0 left-0 h-0.5 animate-slide-in-left bg-gradient-to-r from-orange-500 to-red-500"
-                                style={{ width: "100%" }}
-                              />
-                            )}
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-start justify-between gap-2">
+                                <h4 className={`truncate text-[12.5px] ${n.isRead ? "font-medium text-gray-600 dark:text-gray-300" : "font-semibold text-gray-900 dark:text-white"}`}>
+                                  {n.title}
+                                </h4>
+                                {!n.isRead && (
+                                  <span className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${accent.dot}`} />
+                                )}
+                              </div>
+                              <p className="mt-0.5 line-clamp-2 text-[11px] leading-relaxed text-gray-500 dark:text-gray-400">
+                                {n.message}
+                              </p>
+                              <time
+                                className="mt-1.5 block text-[10px] text-gray-400 dark:text-gray-500"
+                                dateTime={new Date(n.createdAt).toISOString()}
+                                title={formatFullTime(n.createdAt)}
+                              >
+                                {formatRelativeTime(n.createdAt)}
+                              </time>
+                            </div>
                           </div>
-                        ))
-                      )}
-                    </div>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
 
-                    {/* Footer */}
-                    {notifs.length > 0 && (
-                      <div className="border-t border-gray-100 bg-gray-50 px-5 py-3 text-center transition-colors duration-200 dark:border-gray-800 dark:bg-gray-900">
-                        <Link
-                          href="/notifications"
-                          className="text-xs font-medium text-orange-500 transition-all duration-200 hover:text-orange-600 hover:underline"
-                          onClick={() => setShowNotifs(false)}
-                        >
-                          View all notifications →
-                        </Link>
-                      </div>
-                    )}
+                {notifs.length > 0 && (
+                  <div className="border-t border-gray-100/80 bg-gray-50/50 px-5 py-3 text-center dark:border-zinc-800/80 dark:bg-zinc-950/50">
+                    <Link
+                      href="/notifications"
+                      className="text-[11px] font-semibold text-orange-600 transition-colors hover:text-orange-700 dark:text-orange-400 dark:hover:text-orange-300"
+                      onClick={() => setShowNotifs(false)}
+                    >
+                      View all notifications →
+                    </Link>
                   </div>
-                </>
-              )}
-            </div>
+                )}
+              </div>
+            )}
+          </div>
 
-            {/* User Menu */}
-            <div className="relative" ref={userMenuRef}>
-              <Button
-                variant="secondary"
-                className="
-    gap-2
-    rounded-xl
-    px-2 py-1
-  "
-                onClick={() => setShowUserMenu(!showUserMenu)}
-                aria-label="User menu"
+          {/* ── USER MENU ── */}
+          <div className="relative" ref={userMenuRef}>
+            <button
+              type="button"
+              onClick={() => setShowUserMenu((s) => !s)}
+              className={`flex items-center gap-1.5 rounded-xl border px-1.5 py-1 transition-all duration-200 ${
+                showUserMenu
+                  ? "border-orange-300/80 bg-orange-50/50 dark:border-orange-700/50 dark:bg-orange-500/10"
+                  : "border-gray-200/80 bg-white hover:border-orange-300/60 hover:bg-orange-50/30 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-orange-700/40 dark:hover:bg-orange-900/10"
+              }`}
+              aria-label="User menu"
+              aria-expanded={showUserMenu}
+              aria-haspopup="true"
+            >
+              <Avatar name={user?.name || "User"} size={28} />
+              <ChevronDown
+                size={13}
+                className={`mr-0.5 text-gray-400 transition-transform duration-200 ${showUserMenu ? "rotate-180" : ""}`}
+              />
+            </button>
+
+            {showUserMenu && (
+              <div
+                className="absolute right-0 top-11 z-50 w-60 animate-in fade-in slide-in-from-top-2 overflow-hidden rounded-2xl border border-gray-200/80 bg-white shadow-2xl shadow-black/8 duration-150 dark:border-zinc-800/80 dark:bg-zinc-900"
+                role="menu"
               >
-                <Avatar name={user?.name || "User"} size={32} />
-
-                <ChevronDown
-                  size={14}
-                  className={`
-      text-gray-500
-      transition-transform duration-300
-      ${showUserMenu ? "rotate-180" : ""}
-    `}
-                />
-              </Button>
-
-              {/* User Dropdown Menu */}
-              {showUserMenu && (
-                <>
-                  <div
-                    className="fixed inset-0 z-40"
-                    onClick={() => setShowUserMenu(false)}
-                  />
-                  <div className="absolute right-0 top-12 z-50 w-64 animate-in slide-in-from-top-2 fade-in duration-200 overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-900">
-                    {/* User Info */}
-                    <div className="border-b border-gray-100 px-4 py-3 dark:border-gray-800">
-                      <p className="font-semibold text-gray-900 dark:text-white">
-                        {user?.name}
+                {/* User info */}
+                <div className="border-b border-gray-100/80 px-4 py-3.5 dark:border-zinc-800/80">
+                  <div className="flex items-center gap-2.5">
+                    <Avatar name={user?.name || "User"} size={38} />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-[13px] font-semibold text-gray-900 dark:text-white">
+                        {user?.name || "User"}
                       </p>
-                      <p className="text-xs text-gray-500 dark:text-gray-400">
+                      <p className="truncate text-[10.5px] text-gray-400 dark:text-gray-500">
                         {user?.email}
                       </p>
-                      <div className="mt-2">
-                        <span className="inline-block rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-medium text-orange-700 dark:bg-orange-500/20 dark:text-orange-400">
-                          {user?.role || "User"}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Menu Items */}
-                    <div className="py-2">
-                      <Link
-                        href="/profile"
-                        className="flex items-center gap-3 px-4 py-2 text-sm text-gray-700 transition-colors duration-200 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800"
-                        onClick={() => setShowUserMenu(false)}
-                      >
-                        <User size={16} />
-                        My Profile
-                      </Link>
-                      <Link
-                        href="/settings"
-                        className="flex items-center gap-3 px-4 py-2 text-sm text-gray-700 transition-colors duration-200 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800"
-                        onClick={() => setShowUserMenu(false)}
-                      >
-                        <Settings size={16} />
-                        Settings
-                      </Link>
-                      <Link
-                        href="/help"
-                        className="flex items-center gap-3 px-4 py-2 text-sm text-gray-700 transition-colors duration-200 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800"
-                        onClick={() => setShowUserMenu(false)}
-                      >
-                        <HelpCircle size={16} />
-                        Help & Support
-                      </Link>
-                      <hr className="my-2 border-gray-100 dark:border-gray-800" />
-                      <Button
-                        variant="ghost"
-                        className="
-    w-full justify-start
-    rounded-none
-    text-red-600
-    hover:bg-red-50
-    dark:text-red-400
-    dark:hover:bg-red-950/40
-  "
-                        onClick={handleLogout}
-                      >
-                        <LogOut size={16} />
-                        Logout
-                      </Button>
                     </div>
                   </div>
-                </>
-              )}
-            </div>
+                  <span className="mt-2.5 inline-flex items-center rounded-full bg-orange-50 px-2 py-0.5 text-[9.5px] font-bold uppercase tracking-wider text-orange-600 ring-1 ring-orange-200 dark:bg-orange-500/10 dark:text-orange-400 dark:ring-orange-800/40">
+                    {user?.role || "User"}
+                  </span>
+                </div>
+
+                {/* Menu items */}
+                <div className="py-1.5" role="none">
+                  {USER_MENU_ITEMS.map((item) => {
+                    const Icon = item.icon;
+                    return (
+                      <Link
+                        key={item.href}
+                        href={item.href}
+                        role="menuitem"
+                        onClick={() => setShowUserMenu(false)}
+                        className="group flex items-center gap-2.5 px-4 py-2 text-[13px] text-gray-700 transition-colors hover:bg-gray-50 hover:text-orange-600 dark:text-gray-300 dark:hover:bg-zinc-800/60 dark:hover:text-orange-400"
+                      >
+                        <Icon size={14} className="text-gray-400 transition-colors group-hover:text-orange-500" />
+                        {item.label}
+                      </Link>
+                    );
+                  })}
+
+                  <div className="mx-3 my-1.5 h-px bg-gray-100 dark:bg-zinc-800" />
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => { setShowUserMenu(false); setShowLogoutModal(true); }}
+                    className="group flex w-full items-center gap-2.5 px-4 py-2 text-[13px] text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/30"
+                  >
+                    <LogOut size={14} />
+                    <span>Sign out</span>
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </header>
 
-      {/* Command Palette Search Modal */}
+      {/* ── COMMAND PALETTE ── */}
       {showSearch && (
-        <>
+        <div
+          className="fixed inset-0 z-50 animate-in fade-in duration-150"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Search"
+          onClick={closeSearch}
+        >
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
+
           <div
-            className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm animate-in fade-in duration-200"
-            onClick={() => setShowSearch(false)}
-          />
-          <div className="fixed left-1/2 top-1/3 z-50 w-full max-w-lg -translate-x-1/2 -translate-y-1/2 animate-in slide-in-from-top-4 fade-in duration-200 rounded-2xl bg-white shadow-2xl dark:bg-gray-900">
-            <div className="p-4">
-              <div className="flex items-center gap-3 border-b border-gray-100 pb-3 dark:border-gray-800">
-                <Search className="h-5 w-5 text-gray-400" />
+            className="absolute left-1/2 top-[18%] w-full max-w-lg -translate-x-1/2 animate-in fade-in slide-in-from-top-4 px-4 duration-150"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="overflow-hidden rounded-2xl border border-gray-200/80 bg-white shadow-2xl shadow-black/20 dark:border-zinc-800/80 dark:bg-zinc-900">
+              {/* Search input */}
+              <div className="flex items-center gap-3 border-b border-gray-100/80 px-4 py-3.5 dark:border-zinc-800/80">
+                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-orange-50 dark:bg-orange-500/10">
+                  <Search size={14} className="text-orange-500" aria-hidden />
+                </div>
                 <input
                   ref={searchInputRef}
                   type="text"
-                  placeholder="Search files, folders, or people..."
-                  className="flex-1 bg-transparent text-gray-900 outline-none placeholder:text-gray-400 dark:text-white"
+                  role="combobox"
+                  aria-expanded={searchResults.length > 0}
+                  aria-autocomplete="list"
+                  aria-controls="search-results"
+                  placeholder="Search files, folders, or people…"
+                  className="flex-1 bg-transparent text-[13px] text-gray-900 outline-none placeholder:text-gray-400 dark:text-white dark:placeholder:text-gray-500"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                 />
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => setShowSearch(false)}
-                  className="rounded-lg"
+                <button
+                  type="button"
+                  onClick={closeSearch}
+                  className="flex h-7 w-7 items-center justify-center rounded-lg text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-zinc-800 dark:hover:text-gray-200"
+                  aria-label="Close search"
                 >
-                  <X size={18} />
-                </Button>
+                  <X size={14} />
+                </button>
               </div>
 
-              {/* Search Results */}
-              <div className="mt-4 max-h-96 overflow-y-auto">
+              {/* Results */}
+              <div id="search-results" className="max-h-80 overflow-y-auto p-2 scrollbar-hide" role="listbox">
                 {isSearching ? (
-                  <div className="flex items-center justify-center py-8">
-                    <div className="h-6 w-6 animate-spin rounded-full border-2 border-orange-500 border-t-transparent" />
+                  <div className="flex items-center justify-center gap-2 py-10 text-[13px] text-gray-500">
+                    <Loader2 size={15} className="animate-spin text-orange-500" />
+                    Searching…
                   </div>
                 ) : searchQuery && searchResults.length === 0 ? (
-                  <div className="py-8 text-center text-sm text-gray-500 dark:text-gray-400">
-                    No results found for {searchQuery}
+                  <div className="py-10 text-center text-[13px] text-gray-500 dark:text-gray-400">
+                    No results for{" "}
+                    <span className="font-semibold text-gray-900 dark:text-white">&ldquo;{searchQuery}&rdquo;</span>
                   </div>
                 ) : searchResults.length > 0 ? (
-                  <div className="space-y-2">
-                    {searchResults.map((result: any) => (
-                      <div
-                        key={result.id}
-                        className="cursor-pointer rounded-lg p-3 transition-all duration-200 hover:bg-gray-50 dark:hover:bg-gray-800"
-                        onClick={() => {
-                          router.push(`/${result.type}s/${result.id}`);
-                          setShowSearch(false);
-                        }}
+                  <div className="space-y-0.5">
+                    {searchResults.map((r, i) => (
+                      <button
+                        type="button"
+                        key={`${r.type}-${r.id}`}
+                        ref={(el) => { searchResultRefs.current[i] = el; }}
+                        role="option"
+                        aria-selected={searchFocusIndex === i}
+                        onClick={() => navigateSearchResult(r)}
+                        className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-gray-100/80 focus:bg-gray-100/80 focus:outline-none dark:hover:bg-zinc-800/60 dark:focus:bg-zinc-800/60"
                       >
-                        <div className="flex items-center gap-3">
-                          {result.type === "file" && (
-                            <FileUp size={16} className="text-blue-500" />
-                          )}
-                          {result.type === "folder" && (
-                            <FolderPlus size={16} className="text-yellow-500" />
-                          )}
-                          {result.type === "user" && (
-                            <Users size={16} className="text-green-500" />
-                          )}
-                          <div>
-                            <p className="text-sm font-medium text-gray-900 dark:text-white">
-                              {result.name}
-                            </p>
-                            <p className="text-xs text-gray-500 dark:text-gray-400">
-                              {result.path || result.email}
-                            </p>
-                          </div>
+                        <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${
+                          r.type === "file"   ? "bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400"
+                          : r.type === "folder" ? "bg-amber-100 text-amber-600 dark:bg-amber-900/30 dark:text-amber-400"
+                          : "bg-green-100 text-green-600 dark:bg-green-900/30 dark:text-green-400"
+                        }`}>
+                          {r.type === "file"   && <FileText size={14} />}
+                          {r.type === "folder" && <FolderPlus size={14} />}
+                          {r.type === "user"   && <Users size={14} />}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-[13px] font-medium text-gray-900 dark:text-white">{r.name}</p>
+                          <p className="truncate text-[11px] text-gray-400 dark:text-gray-500">{r.path ?? r.email}</p>
                         </div>
-                      </div>
+                        <span className="rounded-md bg-gray-100/80 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-gray-500 dark:bg-zinc-800 dark:text-gray-400">
+                          {r.type}
+                        </span>
+                      </button>
                     ))}
                   </div>
-                ) : searchQuery === "" ? (
-                  <div className="py-8 text-center text-sm text-gray-500 dark:text-gray-400">
-                    <kbd className="mr-1 rounded bg-gray-100 px-1.5 py-0.5 text-xs dark:bg-gray-800">
-                      ⌘
-                    </kbd>
-                    <kbd className="rounded bg-gray-100 px-1.5 py-0.5 text-xs dark:bg-gray-800">
-                      K
-                    </kbd>{" "}
-                    to search
+                ) : (
+                  <div className="px-2 py-5">
+                    <div className="mb-4 text-center">
+                      <p className="text-[13px] font-semibold text-gray-700 dark:text-gray-200">Start typing to search</p>
+                      <p className="mt-1 text-[11px] text-gray-400 dark:text-gray-500">
+                        Files, folders, shares, and people
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      {[
+                        { href: "/transfers/send", label: "New Transfer", icon: <Upload size={14} />, sub: "Send files" },
+                        { href: "/folders", label: "Folders", icon: <FolderOpen size={14} />, sub: "Browse storage" },
+                        { href: "/links", label: "Shared Links", icon: <Link2 size={14} />, sub: "Manage shares" },
+                        { href: "/notifications", label: "Notifications", icon: <Bell size={14} />, sub: `${unread} unread` },
+                      ].map((item) => (
+                        <Link
+                          key={item.href}
+                          href={item.href}
+                          onClick={closeSearch}
+                          className="flex items-center gap-2 rounded-xl border border-gray-200/70 bg-gray-50/70 px-3 py-2.5 transition-colors hover:border-orange-200 hover:bg-orange-50 dark:border-zinc-800 dark:bg-zinc-950/40 dark:hover:border-orange-900/40 dark:hover:bg-orange-950/20"
+                        >
+                          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white text-orange-500 ring-1 ring-gray-200 dark:bg-zinc-900 dark:ring-zinc-800">
+                            {item.icon}
+                          </span>
+                          <span className="min-w-0">
+                            <span className="block truncate text-[12px] font-semibold text-gray-800 dark:text-gray-200">{item.label}</span>
+                            <span className="block truncate text-[10px] text-gray-400 dark:text-gray-500">{item.sub}</span>
+                          </span>
+                        </Link>
+                      ))}
+                    </div>
                   </div>
-                ) : null}
+                )}
+              </div>
+
+              {/* Footer */}
+              <div className="flex items-center justify-between border-t border-gray-100/80 bg-gray-50/60 px-4 py-2.5 dark:border-zinc-800/80 dark:bg-zinc-950/60">
+                <div className="flex items-center gap-3 text-[10px] text-gray-400 dark:text-gray-500">
+                  {[["↑↓", "Navigate"], ["↵", "Open"], ["Esc", "Close"]].map(([key, action]) => (
+                    <span key={action} className="flex items-center gap-1">
+                      <kbd className="rounded border border-gray-200 bg-white px-1 py-0.5 text-[9px] font-medium shadow-sm dark:border-zinc-700 dark:bg-zinc-800">
+                        {key}
+                      </kbd>
+                      {action}
+                    </span>
+                  ))}
+                </div>
+                <span className="text-[10px] text-gray-400 dark:text-gray-500">Jai Export</span>
               </div>
             </div>
           </div>
-        </>
+        </div>
+      )}
+
+      {/* ── LOGOUT MODAL ── */}
+      {showLogoutModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center px-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="logout-title"
+        >
+          <div
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm animate-in fade-in duration-150"
+            onClick={() => setShowLogoutModal(false)}
+            aria-hidden="true"
+          />
+          <div className="relative z-10 w-full max-w-sm animate-in fade-in zoom-in-95 rounded-2xl border border-gray-200/80 bg-white p-6 shadow-2xl shadow-black/20 duration-150 dark:border-zinc-800 dark:bg-zinc-900">
+            <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-linear-to-br from-red-50 to-rose-50 text-red-500 ring-1 ring-red-200 dark:from-red-950/40 dark:to-rose-950/30 dark:ring-red-800/40">
+              <AlertTriangle size={20} />
+            </div>
+            <h2 id="logout-title" className="mb-1.5 text-[15px] font-bold text-gray-900 dark:text-white">
+              Sign out?
+            </h2>
+            <p className="mb-5 text-[13px] leading-relaxed text-gray-500 dark:text-gray-400">
+              You&apos;ll need to sign in again to access your files.
+            </p>
+            <div className="flex gap-2.5">
+              <Button variant="secondary" fullWidth onClick={() => setShowLogoutModal(false)}>
+                Cancel
+              </Button>
+              <Button variant="danger" fullWidth leftIcon={<LogOut size={15} />} onClick={handleLogout}>
+                Sign out
+              </Button>
+            </div>
+          </div>
+        </div>
       )}
     </>
   );

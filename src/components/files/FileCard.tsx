@@ -1,27 +1,30 @@
 "use client";
-import { useState } from "react";
+
+import { type ReactNode, useCallback, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   Download,
-  Trash2,
-  Share2,
   Edit3,
-  RotateCcw,
-  X,
+  ExternalLink,
   MoreVertical,
+  RotateCcw,
+  Share2,
+  Trash2,
+  X,
 } from "lucide-react";
-import { FileItem } from "@/types";
-import {
-  formatBytes,
-  formatRelative,
-  getFileIcon,
-  getFileColorClass,
-  truncate,
-} from "@/lib/utils";
+
+import type { FileItem } from "@/types";
+import { cn, formatBytes, formatRelative, getFileColorClass, truncate } from "@/lib/utils";
+import { FileTypeIcon } from "@/components/ui/FileTypeIcon";
 import { filesApi } from "@/lib/api";
-import { Badge, DropdownMenu } from "@/components/ui";
 import { handleApiError } from "@/lib/error-handler";
 import { showToast } from "@/lib/toast";
+import { Badge, DropdownMenu } from "@/components/ui";
 import Button from "../ui/Button";
+
+/* =========================================================
+   TYPES
+========================================================= */
 
 interface FileCardProps {
   file: FileItem;
@@ -32,54 +35,60 @@ interface FileCardProps {
   isShared?: boolean;
 }
 
-type MenuItem =
+export type MenuItem =
   | {
       label: string;
-      icon: React.ReactNode;
-      onClick: () => void;
+      icon?: ReactNode;
+      onClick?: () => void;
       danger?: boolean;
       disabled?: boolean;
+      divider?: false;
     }
-  | { divider: true; label?: never; icon?: never; onClick?: never };
+  | { divider: true };
 
-export function FileCard({
-  file,
-  onRefresh,
-  selected,
-  onSelect,
-  isTrash,
-  isShared,
-}: FileCardProps) {
-  const [menuOpen, setMenuOpen] = useState(false);
+/* =========================================================
+   ACTIONS HOOK
+========================================================= */
+
+function useFileActions(file: FileItem, onRefresh: () => void) {
+  const router = useRouter();
   const [renaming, setRenaming] = useState(false);
   const [newName, setNewName] = useState(file.name);
 
-  async function handleDownload() {
+  const handleDownload = useCallback(async () => {
     try {
       const res = await filesApi.download(file.id);
-      const url = URL.createObjectURL(new Blob([res.data]));
+      const url: string =
+        res.data?.data?.downloadUrl ??
+        res.data?.downloadUrl ??
+        res.data?.url;
+      if (!url) throw new Error("No download URL returned");
+
       const a = document.createElement("a");
       a.href = url;
       a.download = file.originalName || file.name;
+      a.rel = "noopener noreferrer";
+      document.body.appendChild(a);
       a.click();
-      URL.revokeObjectURL(url);
+      document.body.removeChild(a);
       showToast.success("Download started");
     } catch (err) {
       handleApiError(err);
     }
-  }
+  }, [file.id, file.originalName, file.name]);
 
-  async function handleDelete() {
+  const handleDelete = useCallback(async () => {
     try {
-      await filesApi.delete(file.id);
+      // TODO: collect OTP code via a dialog before deleting
+      await filesApi.delete(file.id, "");
       showToast.success("Moved to trash");
       onRefresh();
     } catch (err) {
       handleApiError(err);
     }
-  }
+  }, [file.id, onRefresh]);
 
-  async function handleRestore() {
+  const handleRestore = useCallback(async () => {
     try {
       await filesApi.restore(file.id);
       showToast.success("File restored");
@@ -87,229 +96,207 @@ export function FileCard({
     } catch (err) {
       handleApiError(err);
     }
-  }
+  }, [file.id, onRefresh]);
 
-  async function handlePermanentDelete() {
-    if (!confirm("Permanently delete this file? This cannot be undone."))
-      return;
+  const handlePermanentDelete = useCallback(async () => {
+    if (!window.confirm("Permanently delete this file? This action cannot be undone.")) return;
     try {
       await filesApi.permanentDelete(file.id);
-      showToast.success("Permanently deleted");
+      showToast.success("File permanently deleted");
       onRefresh();
     } catch (err) {
       handleApiError(err);
     }
-  }
+  }, [file.id, onRefresh]);
 
-  async function handleRename() {
-    if (newName === file.name || !newName.trim()) {
+  const handleRename = useCallback(async () => {
+    const trimmed = newName.trim();
+    if (!trimmed || trimmed === file.name) {
+      setNewName(file.name);
       setRenaming(false);
       return;
     }
     try {
-      await filesApi.rename(file.id, newName.trim());
+      await filesApi.rename(file.id, trimmed);
       showToast.success("File renamed");
-      onRefresh();
       setRenaming(false);
-    } catch (err) {
-      handleApiError(err);
-    }
-  }
-
-  async function handleUnshare() {
-    try {
-      await filesApi.unshare(file.id);
-      showToast.success("File unshared");
       onRefresh();
     } catch (err) {
       handleApiError(err);
     }
-  }
+  }, [file.id, file.name, newName, onRefresh]);
 
-  const menuItems: MenuItem[] = isTrash
-    ? [
-        {
-          label: "Restore",
-          icon: <RotateCcw size={13} />,
-          onClick: handleRestore,
-        },
+  const handleShare = useCallback(() => {
+    sessionStorage.setItem(
+      "pending_send",
+      JSON.stringify([{
+        id: file.id,
+        name: file.name,
+        size: file.size,
+        mimeType: file.mimeType,
+        extension: file.extension,
+      }]),
+    );
+    router.push("/transfers/send");
+  }, [file.id, file.name, file.size, file.mimeType, file.extension, router]);
+
+  const handleManageShares = useCallback(() => {
+    router.push(`/shared?file=${file.id}`);
+  }, [file.id, router]);
+
+  return {
+    renaming,
+    setRenaming,
+    newName,
+    setNewName,
+    handleDownload,
+    handleDelete,
+    handleRestore,
+    handlePermanentDelete,
+    handleRename,
+    handleShare,
+    handleManageShares,
+  };
+}
+
+/* =========================================================
+   FILE CARD
+========================================================= */
+
+export function FileCard({
+  file,
+  onRefresh,
+  selected = false,
+  onSelect,
+  isTrash = false,
+  isShared = false,
+}: FileCardProps) {
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  const {
+    renaming, setRenaming,
+    newName, setNewName,
+    handleDownload,
+    handleDelete,
+    handleRestore,
+    handlePermanentDelete,
+    handleRename,
+    handleShare,
+    handleManageShares,
+  } = useFileActions(file, onRefresh);
+
+  const menuItems: MenuItem[] = useMemo(() => {
+    if (isTrash) {
+      return [
+        { label: "Restore", icon: <RotateCcw size={14} />, onClick: handleRestore },
         { divider: true },
-        {
-          label: "Delete Forever",
-          icon: <X size={13} />,
-          onClick: handlePermanentDelete,
-          danger: true,
-        },
-      ]
-    : [
-        {
-          label: "Download",
-          icon: <Download size={13} />,
-          onClick: handleDownload,
-        },
-        {
-          label: "Rename",
-          icon: <Edit3 size={13} />,
-          onClick: () => setRenaming(true),
-        },
-        ...(isShared
-          ? [
-              {
-                label: "Unshare",
-                icon: <X size={13} />,
-                onClick: handleUnshare,
-              } as MenuItem,
-            ]
-          : [
-              {
-                label: "Share",
-                icon: <Share2 size={13} />,
-                onClick: () => {},
-              } as MenuItem,
-            ]),
-        { divider: true },
-        {
-          label: "Move to Trash",
-          icon: <Trash2 size={13} />,
-          onClick: handleDelete,
-          danger: true,
-        },
+        { label: "Delete Forever", icon: <X size={14} />, onClick: handlePermanentDelete, danger: true },
       ];
+    }
 
-  const icon = getFileIcon(file.mimeType, file.extension || "");
-  const colorClass = getFileColorClass(file.mimeType);
-  const cardBg = selected ? "var(--accent-glow)" : "var(--bg-card)";
-  const cardBorder = selected ? "var(--accent)" : "var(--border)";
+    return [
+      { label: "Download", icon: <Download size={14} />, onClick: handleDownload },
+      { label: "Rename", icon: <Edit3 size={14} />, onClick: () => setRenaming(true) },
+      {
+        label: isShared ? "Manage Sharing" : "Send / Share",
+        icon: isShared ? <ExternalLink size={14} /> : <Share2 size={14} />,
+        onClick: isShared ? handleManageShares : handleShare,
+      },
+      { divider: true },
+      { label: "Move to Trash", icon: <Trash2 size={14} />, onClick: handleDelete, danger: true },
+    ];
+  }, [
+    isTrash, isShared,
+    handleDownload, handleDelete, handleRestore, handlePermanentDelete,
+    handleShare, handleManageShares, setRenaming,
+  ]);
 
   return (
     <div
-      style={{
-        background: cardBg,
-        border: `1px solid ${cardBorder}`,
-        borderRadius: "var(--radius)",
-        padding: 16,
-        position: "relative",
-        transition: "all 0.2s",
-        cursor: "pointer",
-      }}
-      onMouseEnter={(e) => {
-        if (!selected)
-          (e.currentTarget as HTMLElement).style.borderColor =
-            "var(--border-hover)";
-      }}
-      onMouseLeave={(e) => {
-        if (!selected)
-          (e.currentTarget as HTMLElement).style.borderColor = cardBorder;
-      }}
+      className={cn(
+        "group relative overflow-hidden rounded-3xl border bg-(--bg-card) p-4 transition-all duration-300",
+        selected
+          ? "border-orange-500 shadow-lg shadow-orange-500/10"
+          : "border-(--border) hover:-translate-y-1 hover:border-orange-300 hover:shadow-xl hover:shadow-orange-500/5",
+      )}
     >
+      {/* SELECT */}
       {onSelect && (
         <input
           type="checkbox"
-          checked={!!selected}
+          aria-label={`Select ${file.name}`}
+          checked={selected}
           onChange={(e) => onSelect(file.id, e.target.checked)}
-          style={{ position: "absolute", top: 12, left: 12, zIndex: 2 }}
           onClick={(e) => e.stopPropagation()}
+          className="absolute left-4 top-4 z-20 h-4 w-4 accent-orange-500"
         />
       )}
 
-      <div style={{ position: "absolute", top: 10, right: 10 }}>
+      {/* MENU */}
+      <div className="absolute right-3 top-3 z-20">
         <Button
           variant="ghost"
           size="icon"
-          onClick={(e) => {
-            e.stopPropagation();
-            setMenuOpen(!menuOpen);
-          }}
-          className="
-    h-8 w-8 rounded-xl
-    text-[var(--text-muted)]
-    hover:text-orange-500
-  "
+          onClick={(e) => { e.stopPropagation(); setMenuOpen((prev) => !prev); }}
+          className="h-9 w-9 rounded-xl text-gray-500 hover:text-orange-500"
         >
           <MoreVertical size={16} />
         </Button>
+
         {menuOpen && (
           <DropdownMenu
-            items={menuItems as Parameters<typeof DropdownMenu>[0]["items"]}
+            open={menuOpen}
             onClose={() => setMenuOpen(false)}
-            style={{ right: 0, top: 28 }}
+            anchorRef={{ current: null }}
+            items={menuItems}
           />
         )}
       </div>
 
+      {/* FILE ICON */}
       <div
-        style={{
-          width: 52,
-          height: 52,
-          borderRadius: 12,
-          background: "var(--bg-3)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          fontSize: 26,
-          marginBottom: 12,
-          border: "1px solid var(--border)",
-        }}
-        className={colorClass}
+        className={cn(
+          "mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-(--border) bg-(--bg-2) text-3xl",
+          getFileColorClass(file.mimeType),
+        )}
       >
-        {icon}
+        <FileTypeIcon mime={file.mimeType} ext={file.extension || ""} size={28} />
       </div>
 
+      {/* FILE NAME */}
       {renaming ? (
         <input
+          autoFocus
+          aria-label="Rename file"
+          placeholder={file.name}
           value={newName}
+          onClick={(e) => e.stopPropagation()}
           onChange={(e) => setNewName(e.target.value)}
           onBlur={handleRename}
           onKeyDown={(e) => {
             if (e.key === "Enter") handleRename();
-            if (e.key === "Escape") {
-              setRenaming(false);
-              setNewName(file.name);
-            }
+            if (e.key === "Escape") { setRenaming(false); setNewName(file.name); }
           }}
-          autoFocus
-          onClick={(e) => e.stopPropagation()}
-          style={{
-            width: "100%",
-            background: "var(--bg-3)",
-            border: "1px solid var(--accent)",
-            borderRadius: 6,
-            padding: "4px 8px",
-            color: "var(--text)",
-            fontSize: 13,
-            fontFamily: "'DM Sans', sans-serif",
-          }}
+          className="w-full rounded-xl border border-orange-500 bg-(--bg-2) px-3 py-2 text-sm outline-none ring-4 ring-orange-500/10"
         />
       ) : (
-        <div
-          style={{
-            fontSize: 13,
-            fontWeight: 600,
-            marginBottom: 4,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
+        <h3
           title={file.name}
+          className="mb-1 truncate text-sm font-semibold text-[var(--text)]"
         >
-          {truncate(file.name, 22)}
-        </div>
+          {truncate(file.name, 24)}
+        </h3>
       )}
 
-      <div
-        style={{
-          fontSize: 11,
-          color: "var(--text-muted)",
-          display: "flex",
-          justifyContent: "space-between",
-        }}
-      >
+      {/* META */}
+      <div className="flex items-center justify-between text-xs text-[var(--text-muted)]">
         <span>{formatBytes(file.size)}</span>
         <span>{formatRelative(file.createdAt)}</span>
       </div>
 
+      {/* SHARED BADGE */}
       {file.isShared && !isShared && (
-        <div style={{ marginTop: 8 }}>
+        <div className="mt-3">
           <Badge variant="info">Shared</Badge>
         </div>
       )}
@@ -317,146 +304,101 @@ export function FileCard({
   );
 }
 
+/* =========================================================
+   FILE ROW
+========================================================= */
+
 export function FileRow({
   file,
   onRefresh,
-  selected,
+  selected = false,
   onSelect,
-  isTrash,
-  isShared,
+  isTrash = false,
 }: FileCardProps) {
   const [menuOpen, setMenuOpen] = useState(false);
 
-  async function handleDownload() {
-    try {
-      const res = await filesApi.download(file.id);
-      const url = URL.createObjectURL(new Blob([res.data]));
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = file.originalName || file.name;
-      a.click();
-      URL.revokeObjectURL(url);
-      showToast.success("Download started");
-    } catch (err) {
-      handleApiError(err);
-    }
-  }
-  async function handleDelete() {
-    try {
-      await filesApi.delete(file.id);
-      showToast.success("Moved to trash");
-      onRefresh();
-    } catch (err) {
-      handleApiError(err);
-    }
-  }
-  async function handleRestore() {
-    try {
-      await filesApi.restore(file.id);
-      showToast.success("File restored");
-      onRefresh();
-    } catch (err) {
-      handleApiError(err);
-    }
-  }
-  async function handlePermanentDelete() {
-    if (!confirm("Permanently delete?")) return;
-    try {
-      await filesApi.permanentDelete(file.id);
-      showToast.success("Permanently deleted");
-      onRefresh();
-    } catch (err) {
-      handleApiError(err);
-    }
-  }
+  const { handleDownload, handleDelete, handleRestore, handlePermanentDelete } =
+    useFileActions(file, onRefresh);
 
-  const menuItems: MenuItem[] = isTrash
-    ? [
-        {
-          label: "Restore",
-          icon: <RotateCcw size={13} />,
-          onClick: handleRestore,
-        },
-        {
-          label: "Delete Forever",
-          icon: <X size={13} />,
-          onClick: handlePermanentDelete,
-          danger: true,
-        },
-      ]
-    : [
-        {
-          label: "Download",
-          icon: <Download size={13} />,
-          onClick: handleDownload,
-        },
-        {
-          label: "Move to Trash",
-          icon: <Trash2 size={13} />,
-          onClick: handleDelete,
-          danger: true,
-        },
-      ];
+  const menuItems: MenuItem[] = useMemo(
+    () =>
+      isTrash
+        ? [
+            { label: "Restore", icon: <RotateCcw size={14} />, onClick: handleRestore },
+            { label: "Delete Forever", icon: <X size={14} />, onClick: handlePermanentDelete, danger: true },
+          ]
+        : [
+            { label: "Download", icon: <Download size={14} />, onClick: handleDownload },
+            { label: "Move to Trash", icon: <Trash2 size={14} />, onClick: handleDelete, danger: true },
+          ],
+    [isTrash, handleDownload, handleDelete, handleRestore, handlePermanentDelete],
+  );
 
   return (
-    <tr>
-      <td>
+    <tr className="border-b border-(--border) transition-colors hover:bg-(--bg-2)">
+      {/* SELECT */}
+      <td className="px-4 py-4">
         {onSelect && (
           <input
             type="checkbox"
-            checked={!!selected}
+            aria-label={`Select ${file.name}`}
+            checked={selected}
             onChange={(e) => onSelect(file.id, e.target.checked)}
+            className="h-4 w-4 accent-orange-500"
           />
         )}
       </td>
-      <td>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ fontSize: 20 }}>
-            {getFileIcon(file.mimeType, file.extension || "")}
-          </span>
-          <span style={{ fontSize: 13, fontWeight: 500 }} title={file.name}>
+
+      {/* FILE */}
+      <td className="px-4 py-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-(--bg-2) text-xl">
+            <FileTypeIcon mime={file.mimeType} ext={file.extension || ""} size={20} />
+          </div>
+          <p title={file.name} className="max-w-[260px] truncate text-sm font-medium">
             {truncate(file.name, 40)}
-          </span>
+          </p>
         </div>
       </td>
-      <td style={{ color: "var(--text-muted)", fontSize: 13 }}>
+
+      {/* SIZE */}
+      <td className="px-4 py-4 text-sm text-[var(--text-muted)]">
         {formatBytes(file.size)}
       </td>
-      <td style={{ color: "var(--text-muted)", fontSize: 12 }}>
+
+      {/* TYPE */}
+      <td className="px-4 py-4 text-sm text-[var(--text-muted)]">
         {file.mimeType?.split("/")[1]?.toUpperCase() || "—"}
       </td>
-      <td style={{ color: "var(--text-muted)", fontSize: 12 }}>
+
+      {/* DATE */}
+      <td className="px-4 py-4 text-sm text-[var(--text-muted)]">
         {formatRelative(file.createdAt)}
       </td>
-      <td>{file.isShared && <Badge variant="info">Shared</Badge>}</td>
-      <td>
-        <div
-          style={{
-            position: "relative",
-            display: "flex",
-            justifyContent: "flex-end",
-          }}
-        >
+
+      {/* SHARED */}
+      <td className="px-4 py-4">
+        {file.isShared && <Badge variant="info">Shared</Badge>}
+      </td>
+
+      {/* ACTIONS */}
+      <td className="px-4 py-4">
+        <div className="relative flex justify-end">
           <Button
             variant="ghost"
             size="icon"
-            onClick={(e) => {
-              e.stopPropagation();
-              setMenuOpen(!menuOpen);
-            }}
-            className="
-    h-8 w-8 rounded-xl
-    text-[var(--text-muted)]
-    hover:text-orange-500
-  "
+            onClick={(e) => { e.stopPropagation(); setMenuOpen((prev) => !prev); }}
+            className="h-9 w-9 rounded-xl text-gray-500 hover:text-orange-500"
           >
             <MoreVertical size={16} />
           </Button>
+
           {menuOpen && (
             <DropdownMenu
-              items={menuItems as Parameters<typeof DropdownMenu>[0]["items"]}
+              open={menuOpen}
               onClose={() => setMenuOpen(false)}
-              style={{ right: 0, top: 28 }}
+              anchorRef={{ current: null }}
+              items={menuItems}
             />
           )}
         </div>

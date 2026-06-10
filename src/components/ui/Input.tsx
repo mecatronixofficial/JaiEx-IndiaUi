@@ -1,26 +1,50 @@
 "use client";
 
-import React, {
+import {
+  type ReactNode,
   forwardRef,
-  InputHTMLAttributes,
+  type InputHTMLAttributes,
+  useId,
+  useState,
 } from "react";
+
+import {
+  AlertCircle,
+  CheckCircle2,
+  Eye,
+  EyeOff,
+  Loader2,
+} from "lucide-react";
+
+import { cn } from "@/lib/utils";
+
+/* =========================================================
+   TYPES
+========================================================= */
 
 interface InputProps
   extends InputHTMLAttributes<HTMLInputElement> {
   label?: string;
+
   error?: string;
   helperText?: string;
-  leftIcon?: React.ReactNode;
-  rightIcon?: React.ReactNode;
-  className?: string;
+
+  leftIcon?: ReactNode;
+  rightIcon?: ReactNode;
+
   inputClassName?: string;
-  required?: boolean;
+  containerClassName?: string;
+
   loading?: boolean;
+
+  success?: boolean;
+
+  showPasswordToggle?: boolean;
 }
 
-/* =========================
+/* =========================================================
    INPUT
-========================= */
+========================================================= */
 
 const Input = forwardRef<
   HTMLInputElement,
@@ -29,37 +53,80 @@ const Input = forwardRef<
   (
     {
       label,
+
       error,
       helperText,
+
       leftIcon,
       rightIcon,
-      className = "",
+
       inputClassName = "",
+      containerClassName = "",
+
       required = false,
       disabled = false,
+
       loading = false,
+      success = false,
+
+      showPasswordToggle = true,
+
+      className,
+
+      type = "text",
+
       id,
+
       ...props
     },
     ref,
   ) => {
+    const generatedId = useId();
+
+    const inputId = id || generatedId;
+
+    const [showPassword, setShowPassword] =
+      useState(false);
+
+    const isPassword =
+      type === "password";
+
+    const resolvedType =
+      isPassword &&
+      showPasswordToggle &&
+      showPassword
+        ? "text"
+        : type;
+
+    const hasError = !!error;
+
+    const hasLeftIcon = !!leftIcon;
+
+    const hasRightContent =
+      !!rightIcon ||
+      loading ||
+      success ||
+      (isPassword &&
+        showPasswordToggle);
+
     return (
       <div
-        className={`
-          w-full
-          space-y-2
-          ${className}
-        `}
+        className={cn(
+          "w-full space-y-2",
+          className,
+        )}
       >
-        {/* =========================
+        {/* =====================================================
             LABEL
-        ========================= */}
+        ===================================================== */}
 
         {label && (
           <label
-            htmlFor={id}
+            htmlFor={inputId}
             className="
-              flex items-center gap-1.5
+              inline-flex
+              items-center
+              gap-1.5
 
               text-sm
               font-semibold
@@ -68,7 +135,7 @@ const Input = forwardRef<
               dark:text-gray-300
             "
           >
-            {label}
+            <span>{label}</span>
 
             {required && (
               <span className="text-red-500">
@@ -78,122 +145,173 @@ const Input = forwardRef<
           </label>
         )}
 
-        {/* =========================
+        {/* =====================================================
             INPUT WRAPPER
-        ========================= */}
+        ===================================================== */}
 
-        <div className="relative group">
-          {/* Glow Effect */}
+        <div
+          className={cn(
+            `
+              group
+              relative
+            `,
+            containerClassName,
+          )}
+        >
+          {/* =====================================================
+              GLOW EFFECT
+          ===================================================== */}
 
           <div
-            className={`
-              pointer-events-none
-              absolute inset-0
-
-              rounded-2xl
-
-              opacity-0
-              blur-xl
-
-              transition-all duration-300
-
-              ${
-                error
-                  ? "bg-red-500/10 group-focus-within:opacity-100"
-                  : "bg-orange-500/10 group-focus-within:opacity-100"
-              }
-            `}
-          />
-
-          {/* =========================
-              LEFT ICON
-          ========================= */}
-
-          {leftIcon && (
-            <div
-              className={`
-                absolute left-4 top-1/2
-                -translate-y-1/2
-
-                z-20
-
-                flex items-center justify-center
-
+            className={cn(
+              `
                 pointer-events-none
 
-                transition-all duration-200
+                absolute
+                inset-0
 
-                ${
-                  error
-                    ? "text-red-500"
+                rounded-2xl
+
+                opacity-0
+                blur-xl
+
+                transition-all
+                duration-300
+
+                group-focus-within:opacity-100
+              `,
+
+              hasError
+                ? "bg-red-500/10"
+                : success
+                  ? "bg-emerald-500/10"
+                  : "bg-orange-500/10",
+            )}
+          />
+
+          {/* =====================================================
+              LEFT ICON
+          ===================================================== */}
+
+          {hasLeftIcon && (
+            <div
+              className={cn(
+                `
+                  pointer-events-none
+
+                  absolute
+                  left-4
+                  top-1/2
+
+                  z-20
+
+                  flex
+                  -translate-y-1/2
+                  items-center
+                  justify-center
+
+                  transition-colors
+                  duration-200
+                `,
+
+                hasError
+                  ? "text-red-500"
+                  : success
+                    ? "text-emerald-500"
                     : `
-                      text-gray-500
-                      dark:text-gray-300
+                      text-gray-400
 
                       group-focus-within:text-orange-500
-                      dark:group-focus-within:text-orange-400
-                    `
-                }
-              `}
+                    `,
+              )}
             >
               {leftIcon}
             </div>
           )}
 
-          {/* =========================
+          {/* =====================================================
               INPUT
-          ========================= */}
+          ===================================================== */}
 
           <input
             ref={ref}
-            id={id}
+            id={inputId}
+            type={resolvedType}
             disabled={disabled || loading}
-            className={`
-              relative
-              w-full
+            aria-invalid={hasError}
+            aria-describedby={
+              error
+                ? `${inputId}-error`
+                : helperText
+                  ? `${inputId}-helper`
+                  : undefined
+            }
+            className={cn(
+              `
+                relative
+                z-10
 
-              rounded-2xl
-              border
+                w-full
 
-              bg-white
-              dark:bg-zinc-900
+                rounded-2xl
+                border
 
-              text-gray-900
-              dark:text-white
+                bg-white/90
+                backdrop-blur-xl
 
-              placeholder:text-gray-400
-              dark:placeholder:text-gray-500
+                text-gray-900
+                dark:bg-zinc-900/90
+                dark:text-white
 
-              shadow-sm
+                shadow-sm
 
-              transition-all duration-200
+                transition-all
+                duration-200
 
-              focus:outline-none
-              focus:ring-4
+                outline-none
 
-              disabled:cursor-not-allowed
-              disabled:opacity-60
+                placeholder:text-gray-400
+                dark:placeholder:text-gray-500
 
-              ${
-                leftIcon
-                  ? "pl-11"
-                  : "pl-4"
-              }
+                disabled:cursor-not-allowed
+                disabled:opacity-60
 
-              ${
-                rightIcon || loading
-                  ? "pr-11"
-                  : "pr-4"
-              }
+                focus:ring-4
+              `,
 
-              py-3
+              /* ================= PADDING ================= */
 
-              ${
-                error
+              hasLeftIcon
+                ? "pl-11"
+                : "pl-4",
+
+              hasRightContent
+                ? "pr-11"
+                : "pr-4",
+
+              /* ================= SIZE ================= */
+
+              `
+                h-12
+                py-3
+                text-sm
+              `,
+
+              /* ================= STATES ================= */
+
+              hasError
+                ? `
+                  border-red-500
+
+                  focus:border-red-500
+                  focus:ring-red-500/15
+                `
+                : success
                   ? `
-                    border-red-500
-                    focus:border-red-500
-                    focus:ring-red-500/20
+                    border-emerald-500
+
+                    focus:border-emerald-500
+                    focus:ring-emerald-500/15
                   `
                   : `
                     border-gray-200
@@ -203,55 +321,84 @@ const Input = forwardRef<
                     dark:hover:border-orange-700
 
                     focus:border-orange-500
-                    focus:ring-orange-500/20
-                  `
-              }
+                    focus:ring-orange-500/15
+                  `,
 
-              ${inputClassName}
-            `}
+              inputClassName,
+            )}
             {...props}
           />
 
-          {/* =========================
-              RIGHT ICON / LOADER
-          ========================= */}
+          {/* =====================================================
+              RIGHT CONTENT
+          ===================================================== */}
 
-          {(rightIcon || loading) && (
+          {hasRightContent && (
             <div
-              className={`
-                absolute right-4 top-1/2
-                -translate-y-1/2
+              className={cn(
+                `
+                  absolute
+                  right-4
+                  top-1/2
 
-                z-20
+                  z-20
 
-                flex items-center justify-center
+                  flex
+                  -translate-y-1/2
+                  items-center
+                  justify-center
+                `,
 
-                transition-all duration-200
-
-                ${
-                  error
-                    ? "text-red-500"
+                hasError
+                  ? "text-red-500"
+                  : success
+                    ? "text-emerald-500"
                     : `
-                      text-gray-500
-                      dark:text-gray-300
+                      text-gray-400
 
                       group-focus-within:text-orange-500
-                      dark:group-focus-within:text-orange-400
-                    `
-                }
-              `}
+                    `,
+              )}
             >
+              {/* ================= LOADING ================= */}
+
               {loading ? (
-                <div
-                  className="
-                    h-4 w-4
-                    animate-spin
-                    rounded-full
-                    border-2
-                    border-orange-500
-                    border-t-transparent
-                  "
+                <Loader2
+                  size={17}
+                  className="animate-spin"
                 />
+              ) : /* ================= PASSWORD TOGGLE ================= */
+              isPassword &&
+                showPasswordToggle ? (
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  onClick={() =>
+                    setShowPassword(
+                      !showPassword,
+                    )
+                  }
+                  className="
+                    flex
+                    items-center
+                    justify-center
+
+                    text-gray-400
+
+                    transition-colors
+
+                    hover:text-orange-500
+                  "
+                >
+                  {showPassword ? (
+                    <EyeOff size={18} />
+                  ) : (
+                    <Eye size={18} />
+                  )}
+                </button>
+              ) : /* ================= SUCCESS ================= */
+              success ? (
+                <CheckCircle2 size={18} />
               ) : (
                 rightIcon
               )}
@@ -259,31 +406,41 @@ const Input = forwardRef<
           )}
         </div>
 
-        {/* =========================
+        {/* =====================================================
             ERROR
-        ========================= */}
+        ===================================================== */}
 
-        {error && (
-          <p
+        {hasError && (
+          <div
+            id={`${inputId}-error`}
             className="
+              flex
+              items-center
+              gap-1.5
+
               text-sm
               font-medium
+
               text-red-500
-              animate-fade-in
             "
           >
-            {error}
-          </p>
+            <AlertCircle size={14} />
+
+            <span>{error}</span>
+          </div>
         )}
 
-        {/* =========================
+        {/* =====================================================
             HELPER TEXT
-        ========================= */}
+        ===================================================== */}
 
-        {!error && helperText && (
+        {!hasError && helperText && (
           <p
+            id={`${inputId}-helper`}
             className="
               text-sm
+              leading-relaxed
+
               text-gray-500
               dark:text-gray-400
             "

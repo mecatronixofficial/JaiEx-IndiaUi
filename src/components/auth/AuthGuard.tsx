@@ -1,59 +1,95 @@
-'use client';
+"use client";
 
-import { useEffect, useState } from 'react';
-import { useRouter, usePathname } from 'next/navigation';
-import { useAuth } from '@/contexts/AuthContext';
+import React, { useEffect, useMemo, useRef } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { useAuth } from "@/contexts/AuthContext";
+import { Spinner } from "@/components/ui";
+
+/* =========================
+   CONSTANTS
+========================= */
+
+const PUBLIC_ROUTES = new Set<string>([
+  "/",
+  "/login",
+  "/register",
+  "/forgot-password",
+  "/reset-password",
+]);
+
+const DEFAULT_AUTH_ROUTE = "/dashboard";
+
+/* =========================
+   HELPERS
+========================= */
+
+function getSafeRedirect(param: string | null): string {
+  if (!param) return DEFAULT_AUTH_ROUTE;
+  if (!param.startsWith("/") || param.startsWith("//")) return DEFAULT_AUTH_ROUTE;
+  const pathOnly = param.split("?")[0].split("#")[0];
+  if (PUBLIC_ROUTES.has(pathOnly)) return DEFAULT_AUTH_ROUTE;
+  return param;
+}
+
+function isPathPublic(pathname: string): boolean {
+  if (PUBLIC_ROUTES.has(pathname)) return true;
+  for (const route of PUBLIC_ROUTES) {
+    if (pathname.startsWith(`${route}/`)) return true;
+  }
+  return false;
+}
+
+/* =========================
+   AUTH GUARD
+========================= */
 
 export default function AuthGuard({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated, isLoading } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
+  const { isAuthenticated, isLoading } = useAuth();
 
-  const [checked, setChecked] = useState(false);
+  const redirectingRef = useRef(false);
+  const isPublicRoute = useMemo(() => isPathPublic(pathname), [pathname]);
+  const redirectPath = useMemo(
+    () => {
+      if (typeof window === "undefined") return DEFAULT_AUTH_ROUTE;
+      return getSafeRedirect(new URLSearchParams(window.location.search).get("redirect"));
+    },
+    [pathname],
+  );
 
   useEffect(() => {
-    if (isLoading) return;
+    redirectingRef.current = false;
+  }, [pathname]);
 
-    if (!isAuthenticated) {
-      if (pathname !== '/login') {
-        router.replace('/login'); // better than push
-      }
-    } else {
-      setChecked(true);
+  useEffect(() => {
+    if (isLoading || redirectingRef.current) return;
+
+    if (!isAuthenticated && !isPublicRoute) {
+      redirectingRef.current = true;
+      router.replace("/");
+      return;
     }
-  }, [isAuthenticated, isLoading, router, pathname]);
 
-  /* =========================
-     LOADING STATE
-  ========================= */
-  if (isLoading || !checked) {
+    if (isAuthenticated && isPublicRoute) {
+      redirectingRef.current = true;
+      router.replace(redirectPath);
+      return;
+    }
+  }, [isAuthenticated, isLoading, isPublicRoute, pathname, redirectPath, router]);
+
+  const shouldBlock =
+    isLoading ||
+    (!isAuthenticated && !isPublicRoute) ||
+    (isAuthenticated && isPublicRoute);
+
+  if (shouldBlock) {
     return (
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          height: '100vh',
-        }}
-      >
-        <div
-          className="animate-spin"
-          style={{
-            width: 32,
-            height: 32,
-            border: '3px solid var(--border)',
-            borderTopColor: 'var(--accent)',
-            borderRadius: '50%',
-          }}
-        />
+      <div className="flex min-h-screen items-center justify-center">
+        <Spinner size={28} />
       </div>
     );
   }
-
-  /* =========================
-     BLOCK IF NOT AUTH
-  ========================= */
-  if (!isAuthenticated) return null;
 
   return <>{children}</>;
 }

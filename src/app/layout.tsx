@@ -3,7 +3,7 @@ import "./globals.css";
 import Providers from "./providers";
 
 export const metadata: Metadata = {
-  title: "FileFlux - Secure File Transfer",
+  title: "Jai - India Enterprices - Secure File Transfer",
   description: "Fast, secure file transfer and storage platform",
 };
 

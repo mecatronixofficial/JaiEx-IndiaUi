@@ -1,13 +1,12 @@
 "use client";
 import { useState, useEffect, useRef } from "react";
-import { useSearchParams } from "next/navigation";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import AuthGuard from "@/components/auth/AuthGuard";
 import { searchApi } from "@/lib/api";
 import { FileItem } from "@/types";
 import { FileCard } from "@/components/files/FileCard";
 import { EmptyState, Spinner } from "@/components/ui";
-import { Search } from "lucide-react";
+import { Search, X } from "lucide-react";
 import { handleApiError } from "@/lib/error-handler";
 import Button from "@/components/ui/Button";
 
@@ -127,15 +126,15 @@ export default function SearchPage() {
       hover:bg-orange-500/10
     "
                 >
-                  ×
+                  <X size={16} />
                 </Button>
               )}
             </div>
           </div>
 
           {!query && !searched && (
-            <div style={{ textAlign: "center", paddingTop: 60 }}>
-              <div style={{ fontSize: 64, marginBottom: 16 }}>🔍</div>
+            <div className="flex flex-col items-center justify-center pt-16 text-center">
+              <Search size={52} className="mb-4 text-gray-300 dark:text-gray-600" />
               <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 8 }}>
                 Find your files
               </h2>
