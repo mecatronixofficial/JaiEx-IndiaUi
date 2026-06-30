@@ -41,6 +41,7 @@ import {
   CloudUpload,
   FolderOpen,
   Folder,
+  MessageCircle,
   Image as ImageIcon,
   Video,
   Music,
@@ -56,14 +57,22 @@ import {
   ChevronDown,
   ChevronRight,
   Sparkles,
+  Share2,
+  Smartphone,
   Info,
   TrendingUp,
 } from "lucide-react";
 import { formatBytes, formatRelative } from "@/lib/utils";
+import {
+  getTransferFileCount,
+  getTransfersFromResponse,
+  getTransferTotalSize,
+} from "@/lib/transfers";
 import { handleApiError } from "@/lib/error-handler";
 import { transfersApi, uploadApi } from "@/lib/api";
 import { showToast } from "@/lib/toast";
 import StoragePickerModal, { type PickedFile } from "@/components/modals/StoragePickerModal";
+import { Transfer } from "@/types";
 
 /* ──────────────────────────────────────────
    Concurrency-limited parallel runner
@@ -156,17 +165,26 @@ interface TransferStats {
   activeLinks:    number;
 }
 
-interface RecentTransfer {
-  id: string;
-  method: SendMethod;
-  recipients: string[];
-  fileName: string;
-  fileSize: number;
-  status: "delivered" | "pending" | "expired" | "opened";
-  createdAt: string;
-  expiresAt?: string;
-  passwordProtected: boolean;
-  downloadCount: number;
+type SendTransferResponse = Partial<Transfer> & {
+  _id?: string;
+  transfer?: Transfer;
+  link?: Transfer["link"] | string;
+  shortCode?: string;
+};
+
+function transferShareText(url: string) {
+  return `Here is the secure Jai Export transfer link: ${url}`;
+}
+
+function shareHref(kind: "email" | "whatsapp" | "sms", url: string) {
+  const text = transferShareText(url);
+  if (kind === "email") {
+    return `mailto:?subject=${encodeURIComponent("Secure file transfer")}&body=${encodeURIComponent(text)}`;
+  }
+  if (kind === "whatsapp") {
+    return `https://wa.me/?text=${encodeURIComponent(text)}`;
+  }
+  return `sms:?&body=${encodeURIComponent(text)}`;
 }
 
 /* ──────────────────────────────────────────
@@ -219,9 +237,11 @@ const METHODS: {
 /* ──────────────────────────────────────────
    Status badge
 ────────────────────────────────────────── */
-function StatusBadge({ status }: { status: RecentTransfer["status"] }) {
-  const map = {
+function StatusBadge({ status }: { status: string }) {
+  const map: Record<string, { variant: "default" | "success" | "warning" | "danger" | "info"; label: string }> = {
+    active:    { variant: "success", label: "Active"    },
     delivered: { variant: "success", label: "Delivered" },
+    disabled:  { variant: "default", label: "Disabled"  },
     pending:   { variant: "warning", label: "Pending"   },
     expired:   { variant: "default", label: "Expired"   },
     opened:    { variant: "info",    label: "Opened"    },
@@ -360,7 +380,7 @@ export default function SendPage() {
     receivedMails: 0, starredMails: 0, activeLinks: 0,
   });
   const [statsLoading, setStatsLoading] = useState(true);
-  const [recent, setRecent]               = useState<RecentTransfer[]>([]);
+  const [recent, setRecent]               = useState<Transfer[]>([]);
   const [recentLoading, setRecentLoading] = useState(true);
 
   /* Read files pre-selected on the Files page (stored in sessionStorage by FileCard/handleSendSelected) */
@@ -400,10 +420,8 @@ export default function SendPage() {
   async function loadRecent() {
     try {
       setRecentLoading(true);
-      const res   = await transfersApi.list({ limit: 10 });
-      const inner = res.data?.data ?? res.data;
-      const d     = inner?.transfers ?? (Array.isArray(inner) ? inner : []);
-      setRecent(Array.isArray(d) ? d : []);
+      const res = await transfersApi.list({ limit: 10 });
+      setRecent(getTransfersFromResponse(res.data));
     } catch { /* empty */ } finally { setRecentLoading(false); }
   }
 
@@ -485,6 +503,19 @@ export default function SendPage() {
     setTimeout(() => setLinkCopied(false), 2000);
   }
 
+  async function shareGeneratedLink() {
+    if (!generatedLink || !navigator.share) return;
+    try {
+      await navigator.share({
+        title: title.trim() || "Secure file transfer",
+        text: transferShareText(generatedLink),
+        url: generatedLink,
+      });
+    } catch {
+      /* User cancelled native share sheet. */
+    }
+  }
+
   const canSend = () => {
     if (files.length === 0 && preloadedFiles.length === 0) return false;
     if (method === "email" && emails.length === 0) return false;
@@ -563,18 +594,51 @@ export default function SendPage() {
         ...(method === "email" ? { recipients: emails, ...(subject ? { subject } : {}), ...(message ? { message } : {}) } : {}),
       };
       const res = await transfersApi.send(payload);
-      const resData    = res.data?.data ?? res.data;
-      const transferId = resData?.transfer?.id ?? resData?.id ?? resData?._id ?? "";
-      const shortCode  = resData?.link?.shortCode ?? resData?.shortCode ?? "";
-      const linkUrl    = resData?.link?.url ?? (typeof resData?.link === "string" ? resData.link : null);
+      const resData    = (res.data?.data ?? res.data) as SendTransferResponse;
+      const createdTransfer = (resData.transfer ?? resData) as Transfer;
+      const transferId = createdTransfer?.id ?? resData?._id ?? "";
+      const linkObject = typeof resData?.link === "object" ? resData.link : createdTransfer?.link;
+      const shortCode  = linkObject?.shortCode ?? resData?.shortCode ?? "";
+      const linkUrl    = linkObject?.url ?? (typeof resData?.link === "string" ? resData.link : null);
       const link = linkUrl
         ?? (shortCode  ? `${window.location.origin}/t/${shortCode}` : null)
         ?? (transferId ? `${window.location.origin}/t/${transferId}` : "");
       setGeneratedLink(link);
       setSendPhase("done");
       setSentSuccess(true);
-      loadStats();
-      loadRecent();
+      if (transferId) {
+        setRecent((prev) => {
+          const optimistic: Transfer = {
+            ...createdTransfer,
+            id: transferId,
+            title: createdTransfer.title ?? resolvedTitle,
+            method,
+            files: createdTransfer.files ?? [],
+            totalSize: createdTransfer.totalSize ?? totalSize,
+            fileCount: createdTransfer.fileCount ?? totalFileCount,
+            folderCount: createdTransfer.folderCount ?? folderCount,
+            recipients: createdTransfer.recipients ?? emails,
+            senderId: createdTransfer.senderId ?? "",
+            privacy: createdTransfer.privacy ?? privacy,
+            status: createdTransfer.status ?? "active",
+            hasPassword: createdTransfer.hasPassword ?? passwordEnabled,
+            views: createdTransfer.views ?? 0,
+            downloads: createdTransfer.downloads ?? 0,
+            createdAt: createdTransfer.createdAt ?? new Date().toISOString(),
+            updatedAt: createdTransfer.updatedAt ?? new Date().toISOString(),
+            link: linkObject ?? createdTransfer.link,
+          };
+          return [optimistic, ...prev.filter((item) => item.id !== transferId)].slice(0, 10);
+        });
+      }
+      setStats((prev) => ({
+        ...prev,
+        totalTransfers: prev.totalTransfers + 1,
+        selfTransfers: prev.selfTransfers + 1,
+        activeLinks: method === "email" && !link ? prev.activeLinks : prev.activeLinks + 1,
+      }));
+      void loadStats();
+      void loadRecent();
     } catch (err) {
       handleApiError(err);
       setSendPhase("idle");
@@ -770,7 +834,7 @@ export default function SendPage() {
                 </div>
 
                 {generatedLink && (
-                  <div className="w-full max-w-md space-y-3">
+                  <div className="w-full max-w-2xl space-y-3">
                     <div className="overflow-hidden rounded-xl border border-gray-200 bg-gray-50 dark:border-zinc-700 dark:bg-zinc-800">
                       <div className="flex items-center gap-2 px-3 py-2.5">
                         <LinkIcon size={13} className="shrink-0 text-emerald-500" />
@@ -794,18 +858,36 @@ export default function SendPage() {
                       </div>
                     </div>
 
-                    {method === "qr" && (
-                      <div className="flex justify-center">
-                        <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-md dark:border-zinc-700 dark:bg-zinc-900">
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img
-                            src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(generatedLink)}`}
-                            alt="QR Code" width={200} height={200} className="rounded-xl"
-                          />
-                          <p className="mt-2 text-center text-xs text-(--text-muted)">Scan to download</p>
-                        </div>
-                      </div>
-                    )}
+                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                        <a
+                          href={shareHref("email", generatedLink)}
+                          className="flex h-11 items-center justify-center gap-2 rounded-xl border border-blue-200 bg-blue-50 text-sm font-semibold text-blue-700 transition-colors hover:bg-blue-100 dark:border-blue-900/40 dark:bg-blue-900/20 dark:text-blue-300"
+                        >
+                          <Mail size={15} /> Email
+                        </a>
+                        <a
+                          href={shareHref("whatsapp", generatedLink)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex h-11 items-center justify-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 text-sm font-semibold text-emerald-700 transition-colors hover:bg-emerald-100 dark:border-emerald-900/40 dark:bg-emerald-900/20 dark:text-emerald-300"
+                        >
+                          <MessageCircle size={15} /> WhatsApp
+                        </a>
+                        <a
+                          href={shareHref("sms", generatedLink)}
+                          className="flex h-11 items-center justify-center gap-2 rounded-xl border border-gray-200 bg-white text-sm font-semibold text-gray-700 transition-colors hover:bg-gray-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-gray-200 dark:hover:bg-zinc-800"
+                        >
+                          <Smartphone size={15} /> SMS
+                        </a>
+                        <button
+                          type="button"
+                          onClick={shareGeneratedLink}
+                          disabled={typeof navigator === "undefined" || !navigator.share}
+                          className="flex h-11 items-center justify-center gap-2 rounded-xl border border-orange-200 bg-orange-50 text-sm font-semibold text-orange-700 transition-colors hover:bg-orange-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-orange-900/40 dark:bg-orange-900/20 dark:text-orange-300"
+                        >
+                          <Share2 size={15} /> Share
+                        </button>
+                    </div>
                   </div>
                 )}
 
@@ -1502,6 +1584,8 @@ export default function SendPage() {
                   <tbody className="divide-y divide-gray-50 dark:divide-zinc-800/60">
                     {recent.map((tx) => {
                       const mCfg = METHODS.find((m) => m.key === tx.method);
+                      const fileCount = getTransferFileCount(tx);
+                      const totalSize = getTransferTotalSize(tx);
                       return (
                         <tr key={tx.id} className="group transition-colors hover:bg-gray-50/60 dark:hover:bg-zinc-800/30">
                           <td className="px-5 py-3.5">
@@ -1512,9 +1596,9 @@ export default function SendPage() {
                           </td>
                           <td className="px-5 py-3.5">
                             <p className="text-sm font-semibold text-(--text)">
-                              {(tx as any).title || tx.fileName || "Transfer"}
+                              {tx.title || `Transfer ${tx.id.slice(-6)}`}
                             </p>
-                            {tx.passwordProtected && (
+                            {tx.hasPassword && (
                               <span className="mt-0.5 flex items-center gap-1 text-[10px] text-orange-500">
                                 <Lock size={9} /> Password protected
                               </span>
@@ -1524,7 +1608,7 @@ export default function SendPage() {
                             {tx.recipients?.join(", ") || "—"}
                           </td>
                           <td className="px-5 py-3.5 text-sm text-(--text-muted)">
-                            {formatBytes(tx.fileSize)}
+                            {fileCount} file{fileCount !== 1 ? "s" : ""} · {formatBytes(totalSize)}
                           </td>
                           <td className="px-5 py-3.5">
                             <StatusBadge status={tx.status} />
@@ -1534,7 +1618,7 @@ export default function SendPage() {
                           </td>
                           <td className="px-5 py-3.5">
                             <div className="flex items-center gap-1 text-sm font-medium text-(--text-muted)">
-                              <Download size={12} /> {tx.downloadCount ?? 0}
+                              <Download size={12} /> {tx.downloads ?? 0}
                             </div>
                           </td>
                         </tr>

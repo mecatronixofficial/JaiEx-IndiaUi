@@ -17,12 +17,21 @@ import {
   Activity, ArrowUpRight, BarChart3, Bell, Check, CheckCircle,
   Clock, Copy, Crown, Download, Eye, File, Folder, HardDrive,
   Inbox, Link as LinkIcon, RefreshCw, Send, Shield, Star,
-  TrendingDown, TrendingUp, Upload, Users, XCircle, Zap,
+  TrendingDown, TrendingUp, Upload, UserRound, Users, XCircle, Zap,
 } from "lucide-react";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import AuthGuard from "@/components/auth/AuthGuard";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn, formatBytes, formatRelative, truncate } from "@/lib/utils";
+import {
+  getLinksFromResponse,
+  getLinkStatusCounts,
+  getTransferFileCount,
+  getTransferSenderEmail,
+  getTransferSenderLabel,
+  getTransfersFromResponse,
+  getTransferTotalSize,
+} from "@/lib/transfers";
 import Card from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
 import { Avatar, Spinner } from "@/components/ui";
@@ -32,6 +41,18 @@ import {
   transactionsApi, transfersApi, uploadApi, usersApi,
 } from "@/lib/api";
 import { handleApiError } from "@/lib/error-handler";
+import { Notification, Transfer } from "@/types";
+import {
+  loadAdminDashboardData,
+  type AdminDashboardActivity,
+  type AdminDashboardOverview,
+  type AdminDashboardUser,
+  type AdminDashboardUserStats,
+} from "@/lib/admin-dashboard";
+import {
+  getNotificationsFromResponse,
+  getUnreadCountFromResponse,
+} from "@/lib/notifications";
 
 /* ─── Week chart helpers ─── */
 function last7Labels(): string[] {
@@ -284,9 +305,146 @@ function ActivityItem({ item, i }: { item: any; i: number }) {
   );
 }
 
+function auditText(...values: unknown[]) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  }
+  return "";
+}
+
+function auditTitle(value: string) {
+  return value
+    .replace(/[_-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+type AuditRecord = Record<string, unknown>;
+
+function asAuditRecord(value: unknown): AuditRecord {
+  return value && typeof value === "object" ? (value as AuditRecord) : {};
+}
+
+function auditSource(log: unknown): AuditRecord {
+  const root = asAuditRecord(log);
+  return root.data && typeof root.data === "object" ? asAuditRecord(root.data) : root;
+}
+
+function auditCategory(log: unknown) {
+  const root = asAuditRecord(log);
+  const data = auditSource(log);
+  const raw = auditText(root.action, root.type, data.action, data.type, data.targetType, data.resourceType).toLowerCase();
+  if (raw.includes("security") || raw.includes("login") || raw.includes("otp") || raw.includes("password") || raw.includes("disabled")) return "Security";
+  if (raw.includes("transfer")) return "Transfer";
+  if (raw.includes("share")) return "Share";
+  if (raw.includes("link")) return "Link";
+  if (raw.includes("folder")) return "Folder";
+  if (raw.includes("storage") || raw.includes("quota") || raw.includes("session")) return "Storage";
+  if (raw.includes("user") || raw.includes("registered")) return "User";
+  if (raw.includes("file") || raw.includes("upload") || raw.includes("download") || raw.includes("delete")) return "File";
+  return "System";
+}
+
+function auditRisk(log: unknown) {
+  const root = asAuditRecord(log);
+  const data = auditSource(log);
+  const text = auditText(root.action, root.type, data.action, data.type, data.status, root.status).toLowerCase();
+  if (text.includes("delete") || text.includes("disabled") || text.includes("failed") || text.includes("password") || text.includes("otp")) return "high";
+  if (text.includes("download") || text.includes("security") || text.includes("login") || text.includes("public")) return "medium";
+  return "low";
+}
+
+function auditIcon(category: string, action: string) {
+  const normalized = category.toLowerCase();
+  if (normalized === "security") return <Shield size={14} className="text-red-500" />;
+  if (normalized === "transfer") return <Send size={14} className="text-orange-500" />;
+  if (normalized === "link" || normalized === "share") return <LinkIcon size={14} className="text-purple-500" />;
+  if (normalized === "folder") return <Folder size={14} className="text-amber-500" />;
+  if (normalized === "storage") return <HardDrive size={14} className="text-lime-600" />;
+  if (normalized === "user") return <Users size={14} className="text-blue-500" />;
+  if (normalized === "file") return activityIcon(action || "file");
+  return <Activity size={14} className="text-gray-400" />;
+}
+
+function AuditLogItem({ log }: { log: unknown }) {
+  const root = asAuditRecord(log);
+  const data = auditSource(log);
+  const metadata = asAuditRecord(root.metadata ?? data.metadata);
+  const actor = asAuditRecord(data.uploadedBy ?? data.senderId ?? data.user ?? data.actor ?? root.user ?? root.actor);
+  const action = auditText(root.action, root.type, data.action, data.type, "system_event").toLowerCase();
+  const label = auditTitle(action);
+  const category = auditCategory(log);
+  const risk = auditRisk(log);
+  const resource = auditText(
+    data.originalName,
+    data.fileName,
+    data.title,
+    data.name,
+    root.resourceName,
+    root.resource,
+    metadata.fileName,
+    metadata.title,
+  );
+  const actorName = auditText(actor.name, data.actorName, root.actorName, data.name, "System");
+  const actorEmail = auditText(actor.email, data.actorEmail, root.actorEmail, data.email);
+  const description = auditText(root.description, data.description) ||
+    (resource ? `${actorName} ${label.toLowerCase()} - ${resource}` : `${actorName} ${label.toLowerCase()}`);
+  const status = auditText(data.status, root.status, metadata.status);
+  const createdAt = auditText(root.createdAt, data.createdAt, data.updatedAt);
+
+  return (
+    <div className="flex items-start gap-3 px-5 py-4 transition-colors hover:bg-red-50/40 dark:hover:bg-red-500/5">
+      <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-gray-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+        {auditIcon(category, action)}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
+          <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-gray-600 dark:bg-zinc-800 dark:text-gray-300">
+            {category}
+          </span>
+          <span className={cn(
+            "rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide",
+            risk === "high"
+              ? "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400"
+              : risk === "medium"
+              ? "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
+              : "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400",
+          )}>
+            {risk}
+          </span>
+          {status && (
+            <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
+              {status}
+            </span>
+          )}
+        </div>
+        <p className="line-clamp-2 text-sm font-semibold leading-snug text-gray-900 dark:text-white">
+          {description}
+        </p>
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-gray-500 dark:text-gray-400">
+          <span className="max-w-full truncate font-medium text-gray-600 dark:text-gray-300">
+            {actorEmail || actorName || "Unknown actor"}
+          </span>
+          <span className="text-gray-300 dark:text-zinc-600">|</span>
+          <span>{createdAt ? formatRelative(createdAt) : "Time unavailable"}</span>
+          {resource && (
+            <>
+              <span className="text-gray-300 dark:text-zinc-600">|</span>
+              <span className="max-w-full truncate">{resource}</span>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ─── Notification item ─── */
-function NotificationItem({ n }: { n: any }) {
+function NotificationItem({ n }: { n: Notification }) {
   const unread = !n.isRead;
+  const detail = n.message && n.message !== n.title ? n.message : "";
   return (
     <div className={cn(
       "flex items-start gap-3 px-5 py-3 transition-colors",
@@ -300,9 +458,9 @@ function NotificationItem({ n }: { n: any }) {
       </div>
       <div className="min-w-0 flex-1">
         <p className="text-xs font-medium text-gray-800 dark:text-gray-200">
-          {n.title ?? n.message ?? "Notification"}
+          {n.title || n.message || "Notification"}
         </p>
-        {n.body && <p className="mt-0.5 truncate text-[11px] text-gray-500">{n.body}</p>}
+        {detail && <p className="mt-0.5 truncate text-[11px] text-gray-500">{detail}</p>}
         <p className="mt-0.5 text-[11px] text-gray-400">{formatRelative(n.createdAt)}</p>
       </div>
       {unread && <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-orange-500" />}
@@ -311,6 +469,20 @@ function NotificationItem({ n }: { n: any }) {
 }
 
 /* ─── Compact file row ─── */
+function personLabel(item: any) {
+  const person = item?.uploadedBy ?? item?.createdBy ?? item?.owner ?? item?.user ?? item?.sender;
+  if (person && typeof person === "object") {
+    return person.name ?? person.email ?? "Unknown person";
+  }
+  return item?.uploadedByName ?? item?.createdByName ?? item?.ownerName ?? item?.userName ?? item?.senderEmail ?? "Unknown person";
+}
+
+function personEmail(item: any) {
+  const person = item?.uploadedBy ?? item?.createdBy ?? item?.owner ?? item?.user ?? item?.sender;
+  if (person && typeof person === "object") return person.email ?? "";
+  return item?.uploadedByEmail ?? item?.createdByEmail ?? item?.ownerEmail ?? item?.email ?? "";
+}
+
 function RecentFileRow({ file }: { file: any }) {
   return (
     <Link
@@ -329,9 +501,42 @@ function RecentFileRow({ file }: { file: any }) {
         <p className="mt-0.5 text-[11px] text-gray-500">
           {formatBytes(file.size ?? 0)} · {formatRelative(file.createdAt)}
         </p>
+        <p className="mt-0.5 flex items-center gap-1 truncate text-[11px] text-gray-400">
+          <UserRound size={10} />
+          Uploaded by {personLabel(file)}
+        </p>
       </div>
       <span className="shrink-0 rounded-md bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-gray-500 dark:bg-zinc-800 dark:text-gray-400">
         {(file.extension ?? file.mimeType?.split("/")[1] ?? "—").slice(0, 6)}
+      </span>
+    </Link>
+  );
+}
+
+function RecentFolderRow({ folder }: { folder: any }) {
+  return (
+    <Link
+      href="/folders"
+      className="flex items-center gap-3 rounded-xl px-3 py-2.5 transition-colors hover:bg-gray-50 dark:hover:bg-zinc-800/60"
+    >
+      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-amber-100 text-amber-600 dark:bg-amber-900/20 dark:text-amber-400">
+        <Folder size={17} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-medium text-gray-900 dark:text-white">
+          {truncate(folder.name ?? "Folder", 32)}
+        </p>
+        <p className="mt-0.5 text-[11px] text-gray-500">
+          {(folder.fileCount ?? 0).toLocaleString()} files · {(folder.subfolderCount ?? 0).toLocaleString()} folders
+        </p>
+        <p className="mt-0.5 flex items-center gap-1 truncate text-[11px] text-gray-400">
+          <UserRound size={10} />
+          Uploaded by {personLabel(folder)}
+          {personEmail(folder) ? ` · ${personEmail(folder)}` : ""}
+        </p>
+      </div>
+      <span className="shrink-0 text-[11px] text-gray-400">
+        {formatRelative(folder.updatedAt ?? folder.createdAt)}
       </span>
     </Link>
   );
@@ -350,13 +555,14 @@ function UserDashboard({ name, user }: { name: string; user: any }) {
   });
   const [storage, setStorage]                 = useState({ used: 0, quota: 0 });
   const [recentFiles, setRecentFiles]         = useState<any[]>([]);
+  const [recentFolders, setRecentFolders]     = useState<any[]>([]);
   const [folderCount, setFolderCount]         = useState(0);
-  const [recentTransfers, setRecentTransfers] = useState<any[]>([]);
-  const [received, setReceived]               = useState<any[]>([]);
+  const [recentTransfers, setRecentTransfers] = useState<Transfer[]>([]);
+  const [received, setReceived]               = useState<Transfer[]>([]);
   const [activity, setActivity]               = useState<any[]>([]);
   const [lastLink, setLastLink]               = useState<any>(null);
   const [weekSeries, setWeekSeries]           = useState<any[]>([]);
-  const [notifications, setNotifications]     = useState<any[]>([]);
+  const [notifications, setNotifications]     = useState<Notification[]>([]);
   const [unreadCount, setUnreadCount]         = useState(0);
   const [uploadSessions, setUploadSessions]   = useState<any[]>([]);
 
@@ -373,7 +579,7 @@ function UserDashboard({ name, user }: { name: string; user: any }) {
         usersApi.myStorage(),
         transfersApi.list({ limit: 5 }),
         transfersApi.received({ limit: 3 }),
-        linksApi.list({ status: "active", limit: 1 }),
+        linksApi.list(),
         filesApi.list({ limit: 6, page: 1 }),
         foldersApi.list(),
         notificationsApi.unreadCount(),
@@ -381,16 +587,22 @@ function UserDashboard({ name, user }: { name: string; user: any }) {
         uploadApi.getSessions({ limit: 4 }),
       ]);
 
+      const linkCounts = linksRes.status === "fulfilled"
+        ? getLinkStatusCounts(getLinksFromResponse(linksRes.value.data))
+        : null;
+
       if (statsRes.status === "fulfilled") {
         const d = statsRes.value.data?.data ?? statsRes.value.data ?? {};
         setStats({
           totalTransfers: d.totalTransfers ?? d.sent      ?? d.transfers ?? 0,
-          activeLinks:    d.activeLinks    ?? d.links     ?? 0,
+          activeLinks:    linkCounts?.active ?? d.activeLinks ?? d.links ?? 0,
           totalDownloads: d.totalDownloads ?? d.downloads ?? 0,
           receivedMails:  d.receivedMails  ?? d.received  ?? 0,
           totalFiles:     d.totalFiles     ?? d.files     ?? 0,
-          starred:        d.starred        ?? d.starredCount ?? 0,
+          starred:        d.starredMails   ?? d.starred ?? d.starredCount ?? 0,
         });
+      } else if (linkCounts) {
+        setStats((prev) => ({ ...prev, activeLinks: linkCounts.active }));
       }
 
       if (storRes.status === "fulfilled") {
@@ -412,21 +624,16 @@ function UserDashboard({ name, user }: { name: string; user: any }) {
       }
 
       if (txRes.status === "fulfilled") {
-        const inner = txRes.value.data?.data ?? txRes.value.data;
-        const list  = inner?.transfers ?? (Array.isArray(inner) ? inner : []);
-        setRecentTransfers(Array.isArray(list) ? list : []);
+        setRecentTransfers(getTransfersFromResponse(txRes.value.data));
       }
 
       if (recRes.status === "fulfilled") {
-        const inner = recRes.value.data?.data ?? recRes.value.data;
-        const list  = inner?.transfers ?? (Array.isArray(inner) ? inner : []);
-        setReceived(Array.isArray(list) ? list : []);
+        setReceived(getTransfersFromResponse(recRes.value.data));
       }
 
       if (linksRes.status === "fulfilled") {
-        const inner = linksRes.value.data?.data ?? linksRes.value.data;
-        const list  = inner?.links ?? (Array.isArray(inner) ? inner : []);
-        setLastLink(Array.isArray(list) && list.length > 0 ? list[0] : null);
+        const list = getLinksFromResponse(linksRes.value.data);
+        setLastLink(list.find((link) => link.status === "active") ?? list[0] ?? null);
       }
 
       if (filesRes.status === "fulfilled") {
@@ -440,20 +647,18 @@ function UserDashboard({ name, user }: { name: string; user: any }) {
       if (foldersRes.status === "fulfilled") {
         const inner = foldersRes.value.data?.data ?? foldersRes.value.data;
         const list  = inner?.folders ?? (Array.isArray(inner) ? inner : []);
+        setRecentFolders(Array.isArray(list) ? list.slice(0, 5) : []);
         setFolderCount(
           inner?.total ?? inner?.pagination?.total ?? (Array.isArray(list) ? list.length : 0),
         );
       }
 
       if (unreadRes.status === "fulfilled") {
-        const d = unreadRes.value.data?.data ?? unreadRes.value.data ?? {};
-        setUnreadCount(d.count ?? d.unreadCount ?? d.unread ?? 0);
+        setUnreadCount(getUnreadCountFromResponse(unreadRes.value.data));
       }
 
       if (notifsRes.status === "fulfilled") {
-        const inner = notifsRes.value.data?.data ?? notifsRes.value.data;
-        const list  = inner?.notifications ?? (Array.isArray(inner) ? inner : []);
-        setNotifications(Array.isArray(list) ? list.slice(0, 5) : []);
+        setNotifications(getNotificationsFromResponse(notifsRes.value.data).slice(0, 5));
       }
 
       if (uploadsRes.status === "fulfilled") {
@@ -469,7 +674,21 @@ function UserDashboard({ name, user }: { name: string; user: any }) {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    void Promise.resolve().then(() => load());
+  }, [load]);
+
+  useEffect(() => {
+    const refreshOnFocus = () => {
+      if (document.visibilityState === "visible") void load(true);
+    };
+    window.addEventListener("focus", refreshOnFocus);
+    document.addEventListener("visibilitychange", refreshOnFocus);
+    return () => {
+      window.removeEventListener("focus", refreshOnFocus);
+      document.removeEventListener("visibilitychange", refreshOnFocus);
+    };
+  }, [load]);
 
   const storagePie = useMemo(() => {
     const s = {
@@ -691,6 +910,30 @@ function UserDashboard({ name, user }: { name: string; user: any }) {
 
           <Card glass className="overflow-hidden">
             <SectionHead
+              title="Recent Folders"
+              sub="Latest folders and nested collections"
+              href="/folders"
+              icon={<Folder size={15} className="text-amber-500" />}
+            />
+            {loading ? (
+              <div className="flex items-center justify-center py-10"><Spinner size={24} /></div>
+            ) : recentFolders.length === 0 ? (
+              <div className="flex flex-col items-center gap-3 py-10 text-center">
+                <div className="flex h-14 w-14 items-center justify-center rounded-2xl border-2 border-dashed border-gray-200 dark:border-zinc-700">
+                  <Folder size={22} className="text-gray-300 dark:text-zinc-600" />
+                </div>
+                <p className="text-sm font-medium text-gray-500">No folders yet</p>
+                <Link href="/folders"><Button size="sm" variant="secondary">Open Folders</Button></Link>
+              </div>
+            ) : (
+              <div className="divide-y divide-gray-100/70 px-2 py-1 dark:divide-zinc-800/50">
+                {recentFolders.map((folder) => <RecentFolderRow key={folder.id ?? folder._id ?? folder.name} folder={folder} />)}
+              </div>
+            )}
+          </Card>
+
+          <Card glass className="overflow-hidden">
+            <SectionHead
               title="Recent Transfers"
               href="/transfers"
               icon={<Send size={15} className="text-orange-500" />}
@@ -727,11 +970,11 @@ function UserDashboard({ name, user }: { name: string; user: any }) {
                     </div>
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-semibold text-gray-900 dark:text-white">
-                        {t.title ?? t.subject ?? t.fileName ?? "Transfer"}
+                        {t.title || `Transfer ${t.id.slice(-6)}`}
                       </p>
                       <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-                        {t.fileCount ?? t.files ?? 1} file{(t.fileCount ?? t.files ?? 1) !== 1 ? "s" : ""}
-                        {" · "}{formatBytes(t.totalSize ?? t.size ?? 0)}
+                        {getTransferFileCount(t)} file{getTransferFileCount(t) !== 1 ? "s" : ""}
+                        {" · "}{formatBytes(getTransferTotalSize(t))}
                         {" · "}{formatRelative(t.createdAt)}
                       </p>
                     </div>
@@ -785,7 +1028,7 @@ function UserDashboard({ name, user }: { name: string; user: any }) {
             <div className="flex items-center justify-between border-b border-gray-200/70 px-5 py-4 dark:border-zinc-800">
               <div className="flex items-center gap-2">
                 <Inbox size={15} className="text-blue-500" />
-                <h3 className="font-semibold text-gray-900 dark:text-white">Received Files</h3>
+                <h3 className="font-semibold text-gray-900 dark:text-white">Received Items</h3>
               </div>
               <Link href="/transfers/receive" className="text-xs font-medium text-orange-500 hover:text-orange-600">
                 View all
@@ -798,20 +1041,22 @@ function UserDashboard({ name, user }: { name: string; user: any }) {
             ) : (
               <div className="divide-y divide-gray-100 dark:divide-zinc-800/70">
                 {received.map((r) => (
-                  <div key={r.id} className="flex items-center gap-3 px-5 py-3.5">
+                  <Link key={r.id} href={`/transfers/${r.id}`} className="flex items-center gap-3 px-5 py-3.5 transition-colors hover:bg-blue-50/40 dark:hover:bg-blue-500/5">
                     <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-100 text-blue-500 dark:bg-blue-900/20">
                       <Inbox size={13} />
                     </div>
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-medium text-gray-900 dark:text-white">
-                        {r.title ?? r.subject ?? r.fileName ?? "Transfer"}
+                        {r.title || `Transfer ${r.id.slice(-6)}`}
                       </p>
-                      <p className="truncate text-xs text-gray-500">{r.senderEmail ?? r.from ?? "—"}</p>
+                      <p className="truncate text-xs text-gray-500">
+                        {getTransferSenderEmail(r) ?? getTransferSenderLabel(r)}
+                      </p>
                     </div>
                     <span className="shrink-0 text-[11px] text-gray-400">
-                      {formatRelative(r.receivedAt ?? r.createdAt)}
+                      {formatRelative(r.createdAt)}
                     </span>
-                  </div>
+                  </Link>
                 ))}
               </div>
             )}
@@ -883,6 +1128,10 @@ function UserDashboard({ name, user }: { name: string; user: any }) {
                       <p className="text-xs text-gray-500">
                         {formatBytes(s.fileSize ?? s.size ?? 0)} · {formatRelative(s.createdAt)}
                       </p>
+                      <p className="mt-0.5 flex items-center gap-1 truncate text-[11px] text-gray-400">
+                        <UserRound size={10} />
+                        Uploaded by {personLabel(s)}
+                      </p>
                     </div>
                     <StatusBadge status={s.status ?? "completed"} />
                   </div>
@@ -923,59 +1172,47 @@ function UserDashboard({ name, user }: { name: string; user: any }) {
 function AdminDashboard({ name }: { name: string }) {
   const [loading, setLoading]               = useState(true);
   const [refreshing, setRefreshing]         = useState(false);
-  const [overview, setOverview]             = useState<any>({});
-  const [userStats, setUserStats]           = useState<any>({});
+  const [overview, setOverview]             = useState<AdminDashboardOverview>({
+    totalUsers: 0,
+    activeUsers: 0,
+    totalFiles: 0,
+    totalTransfers: 0,
+    activeLinks: 0,
+    expiredLinks: 0,
+    disabledLinks: 0,
+    totalDownloads: 0,
+    totalViews: 0,
+    totalStorage: 0,
+    storageQuota: 0,
+    recentUploads: 0,
+    recentDownloads: 0,
+    newUsersToday: 0,
+    transfersToday: 0,
+    downloadsToday: 0,
+  });
+  const [userStats, setUserStats]           = useState<AdminDashboardUserStats>({
+    total: 0,
+    active: 0,
+    inactive: 0,
+    byRole: { admin: 0, user: 0, superadmin: 0 },
+  });
   const [storage, setStorage]               = useState({ used: 0, quota: 0 });
-  const [teamUsers, setTeamUsers]           = useState<any[]>([]);
-  const [recentActivity, setRecentActivity] = useState<any[]>([]);
+  const [teamUsers, setTeamUsers]           = useState<AdminDashboardUser[]>([]);
+  const [recentActivity, setRecentActivity] = useState<AdminDashboardActivity[]>([]);
   const [weekSeries, setWeekSeries]         = useState<any[]>([]);
   const [unreadCount, setUnreadCount]       = useState(0);
 
   const load = useCallback(async (silent = false) => {
     try {
       if (silent) setRefreshing(true); else setLoading(true);
-
-      const [ovRes, storRes, usersRes, actRes, statsRes, unreadRes] =
-        await Promise.allSettled([
-          adminApi.overview(),
-          adminApi.storage(),
-          adminApi.users({ limit: 8 }),
-          adminApi.activity({ limit: 50 }),
-          usersApi.adminStats(),
-          notificationsApi.unreadCount(),
-        ]);
-
-      if (ovRes.status === "fulfilled") {
-        const d = ovRes.value.data?.data ?? ovRes.value.data ?? {};
-        setOverview(d);
-      }
-      if (storRes.status === "fulfilled") {
-        const d = storRes.value.data?.data ?? storRes.value.data ?? {};
-        setStorage({
-          used:  readStorageUsed(d),
-          quota: readStorageQuota(d),
-        });
-      }
-      if (usersRes.status === "fulfilled") {
-        const inner = usersRes.value.data?.data ?? usersRes.value.data;
-        const list  = inner?.users ?? (Array.isArray(inner) ? inner : []);
-        setTeamUsers(Array.isArray(list) ? list : []);
-      }
-      if (actRes.status === "fulfilled") {
-        const inner = actRes.value.data?.data ?? actRes.value.data;
-        const list  = inner?.activities ?? inner?.activity ?? (Array.isArray(inner) ? inner : []);
-        const arr   = Array.isArray(list) ? list : [];
-        setRecentActivity(arr.slice(0, 8));
-        setWeekSeries(toWeekSeries(groupByDay(arr), "actions"));
-      }
-      if (statsRes.status === "fulfilled") {
-        const d = statsRes.value.data?.data ?? statsRes.value.data ?? {};
-        setUserStats(d);
-      }
-      if (unreadRes.status === "fulfilled") {
-        const d = unreadRes.value.data?.data ?? unreadRes.value.data ?? {};
-        setUnreadCount(d.count ?? d.unreadCount ?? 0);
-      }
+      const data = await loadAdminDashboardData();
+      setOverview(data.overview);
+      setUserStats(data.userStats);
+      setStorage(data.storage);
+      setTeamUsers(data.teamUsers);
+      setRecentActivity(data.recentActivity);
+      setWeekSeries(toWeekSeries(groupByDay(data.recentActivity), "actions"));
+      setUnreadCount(data.unreadCount);
     } catch (err) {
       handleApiError(err);
     } finally {
@@ -984,7 +1221,9 @@ function AdminDashboard({ name }: { name: string }) {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    void Promise.resolve().then(() => load());
+  }, [load]);
 
   const storageChart = useMemo(
     () =>
@@ -1046,7 +1285,7 @@ function AdminDashboard({ name }: { name: string }) {
         <StatCard loading={loading} icon={<Users size={18} />}       label="Total Members"  value={(ov.totalUsers ?? us.total ?? 0).toLocaleString()}                   sub="All accounts"   from="from-blue-500"    to="to-cyan-500"    href="/admin/users" />
         <StatCard loading={loading} icon={<Activity size={18} />}    label="Active Users"   value={(us.active ?? ov.activeUsers ?? 0).toLocaleString()}                  sub="Online/active"  from="from-emerald-500" to="to-green-600"   href="/admin/users" />
         <StatCard loading={loading} icon={<Send size={18} />}        label="Team Transfers" value={(ov.totalTransfers ?? 0).toLocaleString()}                            sub="All time"       from="from-orange-500"  to="to-amber-500"   href="/admin" />
-        <StatCard loading={loading} icon={<CheckCircle size={18} />} label="Active Links"   value={(ov.activeLinks ?? 0).toLocaleString()}                              sub="Across team"    from="from-purple-500"  to="to-violet-600"  href="/links" />
+        <StatCard loading={loading} icon={<CheckCircle size={18} />} label="Active Links"   value={(ov.activeLinks ?? 0).toLocaleString()}                              sub="Across team"    from="from-purple-500"  to="to-violet-600"  href="/admin/links" />
         <StatCard loading={loading} icon={<Download size={18} />}    label="Downloads"      value={(ov.totalDownloads ?? ov.recentDownloads ?? 0).toLocaleString()}      sub="All time"       from="from-sky-500"     to="to-blue-600"    href="/admin" />
         <StatCard loading={loading} icon={<Bell size={18} />}        label="Notifications"  value={unreadCount.toLocaleString()}                                        sub="Unread"         from="from-rose-500"    to="to-pink-500"    href="/notifications" />
       </div>
@@ -1059,27 +1298,27 @@ function AdminDashboard({ name }: { name: string }) {
               <Shield size={13} className="text-blue-500" />
               <span className="text-xs font-semibold text-blue-700 dark:text-blue-400">Admins</span>
             </div>
-            <p className="text-2xl font-bold text-blue-700 dark:text-blue-300">
-              {(us.byRole?.admin ?? us.admin ?? 0).toLocaleString()}
-            </p>
+	            <p className="text-2xl font-bold text-blue-700 dark:text-blue-300">
+	              {us.byRole.admin.toLocaleString()}
+	            </p>
           </div>
           <div className="rounded-2xl border border-emerald-200 bg-emerald-50/60 p-4 dark:border-emerald-800/40 dark:bg-emerald-900/10">
             <div className="mb-1.5 flex items-center gap-2">
               <Users size={13} className="text-emerald-500" />
               <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-400">Regular Users</span>
             </div>
-            <p className="text-2xl font-bold text-emerald-700 dark:text-emerald-300">
-              {(us.byRole?.user ?? us.users ?? 0).toLocaleString()}
-            </p>
+	            <p className="text-2xl font-bold text-emerald-700 dark:text-emerald-300">
+	              {us.byRole.user.toLocaleString()}
+	            </p>
           </div>
           <div className="rounded-2xl border border-gray-200 bg-gray-50/60 p-4 dark:border-zinc-700 dark:bg-zinc-800/50">
             <div className="mb-1.5 flex items-center gap-2">
               <XCircle size={13} className="text-gray-400" />
               <span className="text-xs font-semibold text-gray-500">Inactive</span>
             </div>
-            <p className="text-2xl font-bold text-gray-700 dark:text-gray-300">
-              {((us.total ?? 0) - (us.active ?? 0)).toLocaleString()}
-            </p>
+	            <p className="text-2xl font-bold text-gray-700 dark:text-gray-300">
+	              {us.inactive.toLocaleString()}
+	            </p>
           </div>
         </div>
       )}
@@ -1253,19 +1492,42 @@ function SuperAdminDashboard({ name }: { name: string }) {
     try {
       if (silent) setRefreshing(true); else setLoading(true);
 
-      const [ovRes, storRes, usersRes, actRes, statsRes, notifRes] =
+      const [ovRes, storRes, usersRes, actRes, statsRes, notifRes, adminLinksRes, allLinksRes, transfersRes] =
         await Promise.allSettled([
           adminApi.overview(),
           adminApi.storage(),
           adminApi.users({ limit: 8 }),
-          adminApi.activity({ limit: 50 }),
+          adminApi.auditLogs({ limit: 50 }),
           usersApi.adminStats(),
           notificationsApi.adminStats(),
+          adminApi.links(),
+          linksApi.adminList(),
+          adminApi.transfers({ limit: 100 }),
         ]);
+
+      const adminLinks = adminLinksRes.status === "fulfilled" ? getLinksFromResponse(adminLinksRes.value.data) : [];
+      const allLinks = allLinksRes.status === "fulfilled" ? getLinksFromResponse(allLinksRes.value.data) : [];
+      const transferLinks = transfersRes.status === "fulfilled"
+        ? getTransfersFromResponse(transfersRes.value.data)
+          .map((transfer) => transfer.link)
+          .filter((link): link is NonNullable<typeof link> => Boolean(link?.status))
+        : [];
+      const hasLinkCountSource =
+        adminLinksRes.status === "fulfilled" ||
+        allLinksRes.status === "fulfilled" ||
+        transfersRes.status === "fulfilled";
+      const linkCounts = hasLinkCountSource
+        ? getLinkStatusCounts([...adminLinks, ...allLinks, ...transferLinks])
+        : null;
 
       if (ovRes.status === "fulfilled") {
         const d = ovRes.value.data?.data ?? ovRes.value.data ?? {};
-        setOverview(d);
+        setOverview({
+          ...d,
+          activeLinks: linkCounts?.active ?? d.activeLinks,
+          expiredLinks: linkCounts?.expired ?? d.expiredLinks,
+          disabledLinks: linkCounts?.disabled ?? d.disabledLinks,
+        });
       }
       if (storRes.status === "fulfilled") {
         const d = storRes.value.data?.data ?? storRes.value.data ?? {};
@@ -1281,7 +1543,7 @@ function SuperAdminDashboard({ name }: { name: string }) {
       }
       if (actRes.status === "fulfilled") {
         const inner = actRes.value.data?.data ?? actRes.value.data;
-        const list  = inner?.activities ?? inner?.activity ?? (Array.isArray(inner) ? inner : []);
+        const list  = inner?.activities ?? inner?.activity ?? inner?.events ?? inner?.items ?? (Array.isArray(inner) ? inner : []);
         const arr   = Array.isArray(list) ? list : [];
         setAuditLog(arr.slice(0, 8));
         setWeekSeries(toWeekSeries(groupByDay(arr), "events"));
@@ -1302,7 +1564,9 @@ function SuperAdminDashboard({ name }: { name: string }) {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    void Promise.resolve().then(() => load());
+  }, [load]);
 
   const s  = overview;
   const us = userStats;
@@ -1545,7 +1809,7 @@ function SuperAdminDashboard({ name }: { name: string }) {
       </Card>
 
       {/* ── Top users + audit log ── */}
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-[1fr_340px]">
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_420px]">
         <Card glass className="overflow-hidden">
           <SectionHead title="Top Users by Storage" href="/admin/users" />
           {loading ? (
@@ -1609,7 +1873,7 @@ function SuperAdminDashboard({ name }: { name: string }) {
               <Shield size={13} className="text-red-500" />
               <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Audit Log</h3>
             </div>
-            <Link href="/admin/activity" className="text-xs text-red-500 hover:text-red-600">View all</Link>
+            <Link href="/superadmin/audit-logs" className="text-xs font-medium text-red-500 hover:text-red-600">View all</Link>
           </div>
           {loading ? (
             <div className="flex items-center justify-center py-8"><Spinner size={20} /></div>
@@ -1617,19 +1881,7 @@ function SuperAdminDashboard({ name }: { name: string }) {
             <p className="py-8 text-center text-sm text-gray-400">No audit entries</p>
           ) : (
             <div className="divide-y divide-gray-100 dark:divide-zinc-800/70">
-              {auditLog.map((log, i) => (
-                <div key={log.id ?? i} className="flex items-start gap-3 px-5 py-3.5">
-                  <div className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-red-400" />
-                  <div className="min-w-0 flex-1">
-                    <p className="text-xs font-medium text-gray-800 dark:text-gray-200">
-                      {log.description ?? log.action ?? "—"}
-                    </p>
-                    <p className="mt-0.5 text-[11px] text-gray-500">
-                      {log.userEmail ?? log.actor ?? "—"} · {formatRelative(log.createdAt)}
-                    </p>
-                  </div>
-                </div>
-              ))}
+              {auditLog.map((log, i) => <AuditLogItem key={log.id ?? log._id ?? i} log={log} />)}
             </div>
           )}
         </Card>

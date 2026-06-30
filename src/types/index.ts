@@ -365,9 +365,37 @@ export interface SystemHealth {
   memoryUsage: number;
   diskUsage: number;
   dbConnections: number;
+  dbMaxConnections?: number;
   activeRequests: number;
   errorRate: number;
+  requestsPerMinute?: number;
+  avgResponseMs?: number;
+  p95ResponseMs?: number;
+  environment?: string;
+  region?: string;
+  version?: string;
+  nodeVersion?: string;
+  hostname?: string;
+  startedAt?: string;
   lastChecked: string;
+  services?: {
+    id?: string;
+    name: string;
+    status: 'operational' | 'degraded' | 'down' | 'maintenance';
+    latencyMs?: number;
+    uptime?: number;
+    checkedAt?: string;
+    message?: string;
+  }[];
+  recentErrors?: {
+    id?: string;
+    code?: number | string;
+    message: string;
+    count?: number;
+    lastAt?: string;
+    path?: string;
+    service?: string;
+  }[];
 }
 
 /* ─── Public link viewer types ─── */

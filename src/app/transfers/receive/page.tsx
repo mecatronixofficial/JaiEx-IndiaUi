@@ -1,17 +1,24 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import Link from "next/link";
 import {
   Inbox, Download, Search, Clock, File, FileText, Video, Archive,
-  Table2, Image, Music, Code, RefreshCw, X, Users, Lock,
-  CheckCircle, AlertCircle, Copy, Check, ExternalLink, Send,
+  Table2, Image as ImageIcon, Music, Code, RefreshCw, X, Users, Lock,
+  CheckCircle, AlertCircle, Copy, Check, ExternalLink,
   Sparkles, CloudUpload, Shield, TrendingUp, Eye,
 } from "lucide-react";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import AuthGuard from "@/components/auth/AuthGuard";
-import { Spinner } from "@/components/ui";
 import { formatBytes, formatRelative } from "@/lib/utils";
+import {
+  getTransferFileCount,
+  getTransferLink,
+  getTransferSenderEmail,
+  getTransferSenderLabel,
+  getTransfersFromResponse,
+  getTransferTotalSize,
+} from "@/lib/transfers";
 import { transfersApi } from "@/lib/api";
 import { showToast } from "@/lib/toast";
 import { Transfer } from "@/types";
@@ -23,7 +30,7 @@ function FileChip({ name, size, extension }: { name: string; size: number; exten
   const e = extension.toLowerCase();
   const icon =
     e === "pdf"                              ? <FileText size={11} className="text-red-500" /> :
-    ["jpg","jpeg","png","gif","svg","webp"].includes(e) ? <Image size={11} className="text-blue-500" /> :
+    ["jpg","jpeg","png","gif","svg","webp"].includes(e) ? <ImageIcon size={11} className="text-blue-500" /> :
     ["mp4","mov","avi","mkv"].includes(e)    ? <Video   size={11} className="text-purple-500" /> :
     ["zip","tar","gz","rar","7z"].includes(e)? <Archive size={11} className="text-amber-500" /> :
     ["xls","xlsx","csv"].includes(e)         ? <Table2  size={11} className="text-green-500" /> :
@@ -92,48 +99,60 @@ function StatCard({ label, value, icon, gradient, loading }: {
 ────────────────────────────────────────── */
 type FilterVal = "all" | "new" | "downloaded" | "expiring";
 
+function getDaysLeft(expiresAt: string | undefined, now: number): number | null {
+  if (!expiresAt) return null;
+  const time = new Date(expiresAt).getTime();
+  if (Number.isNaN(time)) return null;
+  return Math.ceil((time - now) / 86_400_000);
+}
+
+function isRecentlyReceived(t: Transfer, now: number): boolean {
+  const created = new Date(t.createdAt).getTime();
+  return !Number.isNaN(created) && now - created < 86_400_000 * 2;
+}
+
 /* ══════════════════════════════════════════
    PAGE
 ══════════════════════════════════════════ */
 export default function ReceivedFilesPage() {
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [loading,   setLoading]   = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [filter,    setFilter]    = useState<FilterVal>("all");
   const [search,    setSearch]    = useState("");
   const [copiedId,  setCopiedId]  = useState<string | null>(null);
-  const [refreshKey, setRefreshKey] = useState(0);
 
-  /* Capture "now" once at mount — avoids calling Date.now() impurely during render */
-  const [mountedAt] = useState(Date.now);
+  const [now, setNow] = useState(() => Date.now());
 
   /* ── Fetch received transfers ── */
-  useEffect(() => {
-    let cancelled = false;
-
-    transfersApi.received({ limit: 100 }).then((res) => {
-      if (cancelled) return;
-      const inner = res.data?.data ?? res.data;
-      const data  = inner?.transfers ?? (Array.isArray(inner) ? inner : []);
-      setTransfers(Array.isArray(data) ? data : []);
+  const loadTransfers = useCallback(async (showSuccess = false) => {
+    try {
+      setLoading(true);
+      setError(null);
+      setNow(Date.now());
+      const res = await transfersApi.received({ limit: 100 });
+      setTransfers(getTransfersFromResponse(res.data));
+      if (showSuccess) showToast.success("Received items refreshed");
+    } catch {
+      setTransfers([]);
+      setError("Failed to load received items. Please try again.");
+      showToast.error("Failed to load received items");
+    } finally {
       setLoading(false);
-    }).catch(() => {
-      if (!cancelled) {
-        showToast.error("Failed to load received transfers");
-        setLoading(false);
-      }
-    });
+    }
+  }, []);
 
-    return () => { cancelled = true; };
-  }, [refreshKey]);
+  useEffect(() => {
+    void Promise.resolve().then(() => loadTransfers());
+  }, [loadTransfers]);
 
   /* ── Derived per-transfer helpers ── */
   function daysLeft(expiresAt?: string): number | null {
-    if (!expiresAt) return null;
-    return Math.ceil((new Date(expiresAt).getTime() - mountedAt) / 86_400_000);
+    return getDaysLeft(expiresAt, now);
   }
 
   function isNew(t: Transfer): boolean {
-    return mountedAt - new Date(t.createdAt).getTime() < 86_400_000 * 2;
+    return isRecentlyReceived(t, now);
   }
 
   function isExpiring(t: Transfer): boolean {
@@ -142,21 +161,29 @@ export default function ReceivedFilesPage() {
   }
 
   function getLink(t: Transfer): string {
-    return t.link?.url
-      ?? (t.link?.shortCode ? `${window.location.origin}/t/${t.link.shortCode}` : `${window.location.origin}/t/${t.id}`);
+    return getTransferLink(t);
   }
 
   /* ── Stats (derived before render) ── */
-  const totalCount     = transfers.length;
-  const newCount       = transfers.filter(isNew).length;
-  const downloadedCount = transfers.filter((t) => (t.downloads ?? 0) > 0).length;
-  const expiringCount  = transfers.filter(isExpiring).length;
+  const stats = useMemo(() => {
+    const totalSize = transfers.reduce((sum, t) => sum + getTransferTotalSize(t), 0);
+    return {
+      totalCount: transfers.length,
+      newCount: transfers.filter((t) => isRecentlyReceived(t, now)).length,
+      downloadedCount: transfers.filter((t) => (t.downloads ?? 0) > 0).length,
+      expiringCount: transfers.filter((t) => {
+        const d = getDaysLeft(t.expiresAt, now);
+        return d !== null && d >= 0 && d <= 3;
+      }).length,
+      totalSize,
+    };
+  }, [transfers, now]);
 
   /* ── Filter + search ── */
   const filtered = useMemo(() => {
     let list = transfers;
     if (search.trim()) {
-      const q = search.toLowerCase();
+      const q = search.trim().toLowerCase();
       list = list.filter((t) =>
         (t.title ?? "").toLowerCase().includes(q) ||
         (t.sender?.email ?? "").toLowerCase().includes(q) ||
@@ -169,18 +196,18 @@ export default function ReceivedFilesPage() {
     if (filter === "expiring")   list = list.filter(isExpiring);
     return list;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [transfers, filter, search]);
+  }, [transfers, filter, search, now]);
 
   const FILTER_TABS: { value: FilterVal; label: string; count: number }[] = [
-    { value: "all",        label: "All",          count: totalCount },
-    { value: "new",        label: "New",          count: newCount },
-    { value: "downloaded", label: "Downloaded",   count: downloadedCount },
-    { value: "expiring",   label: "Expiring Soon",count: expiringCount },
+    { value: "all",        label: "All",           count: stats.totalCount },
+    { value: "new",        label: "New",           count: stats.newCount },
+    { value: "downloaded", label: "Downloaded",    count: stats.downloadedCount },
+    { value: "expiring",   label: "Expiring Soon", count: stats.expiringCount },
   ];
 
   const handleCopy = (t: Transfer) => {
     const url = getLink(t);
-    navigator.clipboard.writeText(url).catch(() => null);
+    navigator.clipboard?.writeText(url).catch(() => showToast.error("Unable to copy link"));
     setCopiedId(t.id);
     setTimeout(() => setCopiedId(null), 2000);
     showToast.success("Link copied");
@@ -203,18 +230,18 @@ export default function ReceivedFilesPage() {
               <div className="flex items-center gap-4">
                 <div className="relative flex h-13 w-13 shrink-0 items-center justify-center rounded-2xl bg-linear-to-br from-blue-500 to-sky-500 text-white shadow-xl shadow-blue-500/25">
                   <Inbox size={22} />
-                  {newCount > 0 && (
+                  {stats.newCount > 0 && (
                     <div className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-orange-500 text-[9px] font-bold text-white shadow-sm">
-                      {newCount}
+                      {stats.newCount > 99 ? "99+" : stats.newCount}
                     </div>
                   )}
                 </div>
                 <div>
                   <div className="flex items-center gap-2">
-                    <h1 className="text-xl font-extrabold tracking-tight text-(--text)">Received Files</h1>
-                    {newCount > 0 && (
+                    <h1 className="text-xl font-extrabold tracking-tight text-(--text)">Received Items</h1>
+                    {stats.newCount > 0 && (
                       <span className="inline-flex items-center gap-1 rounded-full bg-orange-500/10 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-orange-600 dark:text-orange-400">
-                        <Sparkles size={9} /> {newCount} New
+                        <Sparkles size={9} /> {stats.newCount} New
                       </span>
                     )}
                   </div>
@@ -226,7 +253,7 @@ export default function ReceivedFilesPage() {
                   </div>
                 </div>
               </div>
-              <button type="button" onClick={() => { setLoading(true); setRefreshKey((k) => k + 1); }}
+              <button type="button" onClick={() => loadTransfers(true)}
                 disabled={loading}
                 className="flex shrink-0 items-center gap-1.5 rounded-xl border border-gray-200/80 bg-white/80 px-3.5 py-2 text-xs font-semibold text-(--text-muted) shadow-sm backdrop-blur-sm transition-colors hover:text-(--text) disabled:opacity-50 dark:border-zinc-700/60 dark:bg-zinc-900/80">
                 <RefreshCw size={12} className={loading ? "animate-spin" : ""} /> Refresh
@@ -236,11 +263,25 @@ export default function ReceivedFilesPage() {
 
           {/* ── Stats ── */}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <StatCard label="Total Received"  value={totalCount}      loading={loading} gradient="from-blue-500 to-sky-500"       icon={<Inbox size={15} />} />
-            <StatCard label="New"             value={newCount}        loading={loading} gradient="from-orange-500 to-amber-500"   icon={<Sparkles size={15} />} />
-            <StatCard label="Downloaded"      value={downloadedCount} loading={loading} gradient="from-emerald-500 to-green-600"  icon={<Download size={15} />} />
-            <StatCard label="Expiring Soon"   value={expiringCount}   loading={loading} gradient="from-red-500 to-rose-500"       icon={<AlertCircle size={15} />} />
+            <StatCard label="Total Received" value={stats.totalCount} loading={loading} gradient="from-blue-500 to-sky-500" icon={<Inbox size={15} />} />
+            <StatCard label="New" value={stats.newCount} loading={loading} gradient="from-orange-500 to-amber-500" icon={<Sparkles size={15} />} />
+            <StatCard label="Downloaded" value={stats.downloadedCount} loading={loading} gradient="from-emerald-500 to-green-600" icon={<Download size={15} />} />
+            <StatCard label="Expiring Soon" value={stats.expiringCount} loading={loading} gradient="from-red-500 to-rose-500" icon={<AlertCircle size={15} />} />
           </div>
+
+          {!loading && stats.totalCount > 0 && (
+            <div className="flex flex-wrap items-center gap-2 rounded-xl border border-blue-100 bg-blue-50/70 px-4 py-3 text-xs text-blue-700 dark:border-blue-900/30 dark:bg-blue-950/20 dark:text-blue-300">
+              <span className="font-semibold">{stats.totalCount.toLocaleString()} received item{stats.totalCount !== 1 ? "s" : ""}</span>
+              <span className="text-blue-300 dark:text-blue-700">/</span>
+              <span>{formatBytes(stats.totalSize)} available</span>
+              {stats.expiringCount > 0 && (
+                <>
+                  <span className="text-blue-300 dark:text-blue-700">/</span>
+                  <span className="font-semibold text-amber-700 dark:text-amber-300">{stats.expiringCount} expiring soon</span>
+                </>
+              )}
+            </div>
+          )}
 
           {/* ── Filters + search ── */}
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -282,6 +323,23 @@ export default function ReceivedFilesPage() {
                 <div key={i} className="h-36 animate-pulse rounded-2xl bg-gray-100 dark:bg-zinc-800" />
               ))}
             </div>
+          ) : error ? (
+            <div className="flex flex-col items-center justify-center gap-4 rounded-2xl border border-red-200/80 bg-red-50/70 px-6 py-18 text-center shadow-sm dark:border-red-900/40 dark:bg-red-950/20">
+              <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-white text-red-500 dark:bg-zinc-900">
+                <AlertCircle size={22} />
+              </div>
+              <div>
+                <p className="font-semibold text-(--text)">Received items could not be loaded</p>
+                <p className="mt-0.5 text-sm text-(--text-muted)">{error}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => loadTransfers()}
+                className="flex h-9 items-center gap-1.5 rounded-xl bg-red-600 px-4 text-xs font-bold text-white shadow-sm transition-colors hover:bg-red-700"
+              >
+                <RefreshCw size={12} /> Retry
+              </button>
+            </div>
           ) : filtered.length === 0 ? (
             <div className="flex flex-col items-center justify-center gap-4 rounded-2xl border border-gray-200/80 bg-white py-20 text-center shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
               <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-gray-50 dark:bg-zinc-800">
@@ -297,6 +355,15 @@ export default function ReceivedFilesPage() {
                   {search ? "Try a different search term" : "Transfers sent to you will appear here"}
                 </p>
               </div>
+              {(search || filter !== "all") && (
+                <button
+                  type="button"
+                  onClick={() => { setSearch(""); setFilter("all"); }}
+                  className="flex h-9 items-center gap-1.5 rounded-xl border border-gray-200 px-4 text-xs font-semibold text-(--text-muted) transition-colors hover:text-(--text) dark:border-zinc-700"
+                >
+                  <X size={12} /> Clear filters
+                </button>
+              )}
             </div>
           ) : (
             <div className="space-y-3">
@@ -306,8 +373,11 @@ export default function ReceivedFilesPage() {
                 const brandNew = isNew(t);
                 const hasDl    = (t.downloads ?? 0) > 0;
                 const link     = getLink(t);
-                const senderName  = t.sender?.name ?? t.sender?.email ?? "Unknown sender";
-                const senderEmail = t.sender?.email;
+                const senderName  = getTransferSenderLabel(t);
+                const senderEmail = getTransferSenderEmail(t);
+                const fileCount = getTransferFileCount(t);
+                const totalSize = getTransferTotalSize(t);
+                const indicator = brandNew && !hasDl ? "new" : expiring ? "expiring" : null;
 
                 return (
                   <div key={t.id}
@@ -321,15 +391,16 @@ export default function ReceivedFilesPage() {
                     ].join(" ")}>
 
                     {/* New / expiring indicator strip */}
-                    {(brandNew && !hasDl) && (
-                      <div className="h-0.5 w-full bg-linear-to-r from-blue-400 to-sky-400" />
-                    )}
-                    {expiring && (
-                      <div className="h-0.5 w-full bg-linear-to-r from-amber-400 to-orange-400" />
+                    {indicator && (
+                      <div className={[
+                        "h-0.5 w-full bg-linear-to-r",
+                        indicator === "new" ? "from-blue-400 to-sky-400" : "from-amber-400 to-orange-400",
+                      ].join(" ")}
+                      />
                     )}
 
                     <div className="p-5">
-                      <div className="flex items-start gap-4">
+                      <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
                         {/* Icon */}
                         <div className={[
                           "flex h-11 w-11 shrink-0 items-center justify-center rounded-xl transition-colors",
@@ -345,7 +416,7 @@ export default function ReceivedFilesPage() {
                           <div className="flex flex-wrap items-start justify-between gap-2">
                             <div className="min-w-0">
                               <div className="flex flex-wrap items-center gap-2">
-                                <h3 className="font-bold text-(--text)">
+                                <h3 className="break-words font-bold text-(--text)">
                                   {t.title || `Transfer ${t.id.slice(-8)}`}
                                 </h3>
                                 {brandNew && !hasDl && (
@@ -359,7 +430,7 @@ export default function ReceivedFilesPage() {
                                   </span>
                                 )}
                               </div>
-                              <p className="mt-0.5 flex items-center gap-1.5 text-sm text-(--text-muted)">
+                              <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-sm text-(--text-muted)">
                                 <Users size={11} className="text-gray-400" />
                                 From{" "}
                                 <span className="font-semibold text-(--text)">{senderName}</span>
@@ -395,7 +466,7 @@ export default function ReceivedFilesPage() {
                           {/* Footer row */}
                           <div className="flex flex-wrap items-center justify-between gap-3">
                             <div className="flex flex-wrap items-center gap-3 text-[11px] text-(--text-muted)">
-                              <span>{t.fileCount} file{t.fileCount !== 1 ? "s" : ""} · {formatBytes(t.totalSize)}</span>
+                              <span>{fileCount} file{fileCount !== 1 ? "s" : ""} · {formatBytes(totalSize)}</span>
                               <ExpiryBadge daysLeft={days} />
                               {hasDl && (
                                 <span className="flex items-center gap-1 font-semibold text-emerald-600 dark:text-emerald-400">
@@ -445,7 +516,7 @@ export default function ReceivedFilesPage() {
           {!loading && filtered.length > 0 && (
             <p className="text-center text-xs text-(--text-muted)">
               Showing <span className="font-semibold text-(--text)">{filtered.length}</span> of{" "}
-              <span className="font-semibold text-(--text)">{totalCount}</span> received transfers
+              <span className="font-semibold text-(--text)">{stats.totalCount}</span> received transfers
             </p>
           )}
 

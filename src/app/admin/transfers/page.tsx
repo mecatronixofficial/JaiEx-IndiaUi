@@ -1,10 +1,10 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useMemo, useState, useCallback, useEffect } from "react";
 import {
   Send, Search, RefreshCw, ChevronLeft, ChevronRight,
   Mail, Link as LinkIcon, QrCode, Clock, CheckCircle2,
-  Ban, Eye, Users, Download, Filter,
+  Ban, Eye, Users, Download, Filter, HardDrive, ShieldCheck,
 } from "lucide-react";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import AuthGuard from "@/components/auth/AuthGuard";
@@ -28,15 +28,36 @@ interface AdminTransfer {
   views?: number;
   downloads?: number;
   sender?: { id?: string; name?: string; email?: string };
-  senderId?: string;
+  senderId?: string | { _id?: string; id?: string; name?: string; email?: string };
   expiresAt?: string;
   hasPassword?: boolean;
   privacy?: string;
   createdAt: string;
 }
 
+interface TransferSummary {
+  total: number;
+  active: number;
+  expired: number;
+  disabled: number;
+  totalSize: number;
+  totalViews: number;
+  totalDownloads: number;
+}
+
+const EMPTY_SUMMARY: TransferSummary = {
+  total: 0,
+  active: 0,
+  expired: 0,
+  disabled: 0,
+  totalSize: 0,
+  totalViews: 0,
+  totalDownloads: 0,
+};
+
 /* eslint-disable @typescript-eslint/no-explicit-any */
 function mapTransfer(raw: any): AdminTransfer {
+  const senderDoc = typeof raw.senderId === "object" && raw.senderId !== null ? raw.senderId : raw.sender;
   return {
     id:         raw.id ?? raw._id ?? "",
     title:      raw.title ?? "Untitled transfer",
@@ -47,8 +68,12 @@ function mapTransfer(raw: any): AdminTransfer {
     recipients: raw.recipients ?? [],
     views:      raw.views ?? 0,
     downloads:  raw.downloads ?? 0,
-    sender:     raw.sender,
-    senderId:   raw.senderId ?? raw.sender?.id,
+    sender:     senderDoc ? {
+      id: senderDoc.id ?? senderDoc._id,
+      name: senderDoc.name,
+      email: senderDoc.email,
+    } : raw.sender,
+    senderId:   typeof raw.senderId === "string" ? raw.senderId : raw.senderId?._id ?? raw.sender?.id,
     expiresAt:  raw.expiresAt,
     hasPassword:raw.hasPassword ?? false,
     privacy:    raw.privacy ?? "public",
@@ -68,7 +93,20 @@ function parseTransfers(data: any): AdminTransfer[] {
 }
 
 function parseTotal(data: any): number {
-  return data?.total ?? data?.data?.total ?? data?.meta?.total ?? data?.count ?? 0;
+  return data?.pagination?.total ?? data?.data?.pagination?.total ?? data?.total ?? data?.data?.total ?? data?.meta?.total ?? data?.count ?? 0;
+}
+
+function parseSummary(data: any): TransferSummary {
+  const raw = data?.summary ?? data?.data?.summary ?? {};
+  return {
+    total: Number(raw.total ?? parseTotal(data)) || 0,
+    active: Number(raw.active) || 0,
+    expired: Number(raw.expired) || 0,
+    disabled: Number(raw.disabled) || 0,
+    totalSize: Number(raw.totalSize) || 0,
+    totalViews: Number(raw.totalViews) || 0,
+    totalDownloads: Number(raw.totalDownloads) || 0,
+  };
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
@@ -105,8 +143,8 @@ export default function AdminTransfersPage() {
 
   const [transfers,  setTransfers]  = useState<AdminTransfer[]>([]);
   const [total,      setTotal]      = useState(0);
+  const [summary,    setSummary]    = useState<TransferSummary>(EMPTY_SUMMARY);
   const [loading,    setLoading]    = useState(true);
-  const [fetchKey,   setFetchKey]   = useState(0);
   const [search,     setSearch]     = useState("");
   const [status,     setStatus]     = useState<StatusFilter>("all");
   const [method,     setMethod]     = useState("all");
@@ -116,9 +154,9 @@ export default function AdminTransfersPage() {
     if (me && !isAdmin) router.replace("/dashboard");
   }, [me, isAdmin, router]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (silent = false) => {
     if (!isAdmin) return;
-    setLoading(true);
+    if (!silent) setLoading(true);
     try {
       const params: Record<string, unknown> = { page, limit: PAGE_SIZE };
       if (search.trim())  params.search = search.trim();
@@ -127,7 +165,9 @@ export default function AdminTransfersPage() {
 
       const res = await adminApi.transfers(params);
       setTransfers(parseTransfers(res.data));
-      setTotal(parseTotal(res.data));
+      const nextTotal = parseTotal(res.data);
+      setTotal(nextTotal);
+      setSummary(parseSummary(res.data));
     } catch (err) {
       handleApiError(err);
     } finally {
@@ -135,10 +175,24 @@ export default function AdminTransfersPage() {
     }
   }, [isAdmin, page, search, status, method]);
 
-  useEffect(() => { load(); }, [load, fetchKey]);
-  useEffect(() => { setPage(1); }, [search, status, method]);
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      void load();
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, [load]);
+
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      setPage(1);
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, [search, status, method]);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const hasFilters = Boolean(search.trim() || status !== "all" || method !== "all");
+  const pageSizeTotal = useMemo(() => transfers.reduce((sum, transfer) => sum + (transfer.totalSize ?? 0), 0), [transfers]);
+  const pageRecipients = useMemo(() => transfers.reduce((sum, transfer) => sum + (transfer.recipients?.length ?? 0), 0), [transfers]);
 
   return (
     <AuthGuard>
@@ -152,11 +206,11 @@ export default function AdminTransfersPage() {
                 <Send size={18} className="text-orange-500" />
               </div>
               <div>
-                <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Transfers</h1>
-                <p className="text-xs text-gray-400 dark:text-gray-500">All platform transfers</p>
+                <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Transfer Manager</h1>
+                <p className="text-xs text-gray-400 dark:text-gray-500">Live platform transfers, delivery modes, recipients, and engagement</p>
               </div>
             </div>
-            <button type="button" onClick={() => setFetchKey((k) => k + 1)} disabled={loading}
+            <button type="button" onClick={() => load()} disabled={loading}
               className="flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3.5 py-2 text-sm font-medium text-gray-600 transition hover:border-orange-300 hover:bg-orange-50 hover:text-orange-600 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-gray-400 dark:hover:border-orange-700 dark:hover:text-orange-400">
               <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
               Refresh
@@ -164,19 +218,45 @@ export default function AdminTransfersPage() {
           </div>
 
           {/* Stats */}
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3 xl:grid-cols-6">
             {[
-              { label: "Total",    value: total,                                              icon: <Send size={13} />,         color: "text-orange-500" },
-              { label: "Active",   value: transfers.filter((t) => t.status === "active").length, icon: <CheckCircle2 size={13} />, color: "text-green-500" },
-              { label: "Expired",  value: transfers.filter((t) => t.status === "expired").length, icon: <Clock size={13} />,        color: "text-gray-500" },
-              { label: "Disabled", value: transfers.filter((t) => t.status === "disabled").length, icon: <Ban size={13} />,          color: "text-red-500" },
+              { label: "Total",    value: summary.total || total, icon: <Send size={13} />, color: "text-orange-500", format: "number" },
+              { label: "Active",   value: summary.active, icon: <CheckCircle2 size={13} />, color: "text-green-500", format: "number" },
+              { label: "Expired",  value: summary.expired, icon: <Clock size={13} />, color: "text-gray-500", format: "number" },
+              { label: "Disabled", value: summary.disabled, icon: <Ban size={13} />, color: "text-red-500", format: "number" },
+              { label: "Data", value: summary.totalSize || pageSizeTotal, icon: <HardDrive size={13} />, color: "text-blue-500", format: "bytes" },
+              { label: "Downloads", value: summary.totalDownloads, icon: <Download size={13} />, color: "text-purple-500", format: "number" },
             ].map((s) => (
               <div key={s.label} className="rounded-2xl border border-gray-200/80 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
                 <div className={`mb-2 flex items-center gap-1.5 text-xs font-medium ${s.color}`}>{s.icon} {s.label}</div>
                 {loading ? <div className="h-6 w-12 animate-pulse rounded bg-gray-100 dark:bg-zinc-800" />
-                  : <p className="text-xl font-bold text-gray-900 dark:text-white">{s.value}</p>}
+                  : <p className="text-xl font-bold text-gray-900 dark:text-white">{s.format === "bytes" ? formatBytes(s.value) : s.value.toLocaleString()}</p>}
               </div>
             ))}
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="rounded-2xl border border-gray-200/80 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+              <div className="flex items-center gap-2 text-sm font-semibold text-gray-800 dark:text-gray-200">
+                <Users size={15} className="text-sky-500" />
+                Recipients on page
+              </div>
+              <p className="mt-2 text-xs text-gray-500">{pageRecipients.toLocaleString()} recipients across {transfers.length} loaded transfers</p>
+            </div>
+            <div className="rounded-2xl border border-gray-200/80 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+              <div className="flex items-center gap-2 text-sm font-semibold text-gray-800 dark:text-gray-200">
+                <Eye size={15} className="text-emerald-500" />
+                Total views
+              </div>
+              <p className="mt-2 text-xs text-gray-500">{summary.totalViews.toLocaleString()} views in current result set</p>
+            </div>
+            <div className="rounded-2xl border border-gray-200/80 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+              <div className="flex items-center gap-2 text-sm font-semibold text-gray-800 dark:text-gray-200">
+                <ShieldCheck size={15} className="text-orange-500" />
+                Filter state
+              </div>
+              <p className="mt-2 text-xs text-gray-500">{hasFilters ? "Filtered results active" : "Showing all accessible transfers"}</p>
+            </div>
           </div>
 
           {/* Filters */}
@@ -189,6 +269,15 @@ export default function AdminTransfersPage() {
                   className="h-9 w-full rounded-xl border border-gray-200 bg-white pl-9 pr-4 text-sm outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-500/15 dark:border-zinc-700 dark:bg-zinc-900 dark:text-white"
                 />
               </div>
+              {hasFilters && (
+                <button
+                  type="button"
+                  onClick={() => { setSearch(""); setStatus("all"); setMethod("all"); }}
+                  className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-semibold text-gray-600 transition hover:border-orange-300 hover:bg-orange-50 hover:text-orange-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-gray-400"
+                >
+                  Clear filters
+                </button>
+              )}
               <div className="flex flex-wrap items-center gap-2">
                 <div className="flex items-center gap-1">
                   <Filter size={12} className="text-gray-400" />
@@ -222,7 +311,7 @@ export default function AdminTransfersPage() {
             {loading ? (
               <div className="flex h-52 items-center justify-center"><Spinner size={24} /></div>
             ) : transfers.length === 0 ? (
-              <EmptyState icon={<Send size={32} />} title="No transfers found" description="Try adjusting your filters" />
+              <EmptyState icon={<Send size={32} />} title="No transfers found" description={hasFilters ? "Try clearing filters or searching another transfer" : "Transfers will appear here after users send files"} />
             ) : (
               <>
                 <div className="overflow-x-auto">
@@ -239,7 +328,11 @@ export default function AdminTransfersPage() {
                         <tr key={t.id} className="transition-colors hover:bg-gray-50/60 dark:hover:bg-zinc-800/30">
                           <td className="px-5 py-3.5">
                             <p className="max-w-44 truncate text-xs font-semibold text-gray-800 dark:text-gray-200">{t.title}</p>
-                            <p className="text-[11px] text-gray-400 font-mono">{t.id.slice(0, 10)}…</p>
+                            <p className="font-mono text-[11px] text-gray-400">{t.id.slice(0, 10)}…</p>
+                            <div className="mt-1 flex flex-wrap gap-1">
+                              {t.hasPassword && <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-semibold text-gray-500 dark:bg-zinc-800 dark:text-gray-400">Password</span>}
+                              {t.privacy && <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-semibold capitalize text-gray-500 dark:bg-zinc-800 dark:text-gray-400">{t.privacy}</span>}
+                            </div>
                           </td>
                           <td className="px-5 py-3.5">
                             {t.sender ? (
@@ -257,6 +350,9 @@ export default function AdminTransfersPage() {
                               {methodIcon(t.method)}
                               <span className="text-xs text-gray-600 dark:text-gray-400">{t.method ?? "link"}</span>
                             </div>
+                            {t.recipients && t.recipients.length > 0 && (
+                              <p className="mt-1 text-[11px] text-gray-400">{t.recipients.length} recipient{t.recipients.length !== 1 ? "s" : ""}</p>
+                            )}
                           </td>
                           <td className="px-5 py-3.5">
                             <p className="text-xs font-medium text-gray-700 dark:text-gray-300">{t.fileCount ?? 0}</p>
@@ -282,6 +378,7 @@ export default function AdminTransfersPage() {
                           <td className="whitespace-nowrap px-5 py-3.5">
                             <p className="text-xs text-gray-500">{formatRelative(t.createdAt)}</p>
                             <p className="text-[11px] text-gray-400">{formatDateTime(t.createdAt)}</p>
+                            {t.expiresAt && <p className="mt-1 text-[11px] text-gray-400">Expires {formatRelative(t.expiresAt)}</p>}
                           </td>
                         </tr>
                       ))}

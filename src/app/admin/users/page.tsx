@@ -1,11 +1,11 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useMemo, useState, useCallback, useEffect } from "react";
 import {
   Users, Search, Plus, Eye, Trash2, Shield, Crown, CheckCircle2,
   UserCheck, HardDrive, RefreshCw, X, Ban, Power, PowerOff, Save,
   Pencil, ChevronDown, ChevronLeft, ChevronRight as ChevronRightIcon,
-  AlertTriangle, Mail, Phone, Building2, Calendar,
+  AlertTriangle, Mail, Phone, Building2, Calendar, DatabaseZap,
 } from "lucide-react";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import AuthGuard from "@/components/auth/AuthGuard";
@@ -33,6 +33,17 @@ interface EditForm {
   department: string;
   phone: string;
   role: User["role"];
+}
+
+interface AdminUserStats {
+  total: number;
+  active: number;
+  inactive: number;
+  byRole: Partial<Record<User["role"], number>>;
+  storage?: {
+    totalUsedBytes?: number;
+    totalQuotaBytes?: number;
+  };
 }
 
 type ApiUser = Partial<User> & {
@@ -86,6 +97,8 @@ function parseUsers(data: any): User[] {
 
 function parseTotal(data: any): number {
   return (
+    data?.pagination?.total ??
+    data?.data?.pagination?.total ??
     data?.total         ??
     data?.data?.total   ??
     data?.meta?.total   ??
@@ -94,6 +107,18 @@ function parseTotal(data: any): number {
     data?.data?.count   ??
     0
   );
+}
+
+function parseAdminStats(data: any): AdminUserStats | null {
+  const raw = data?.data ?? data;
+  if (!raw || typeof raw !== "object") return null;
+  return {
+    total: Number(raw.total) || 0,
+    active: Number(raw.active) || 0,
+    inactive: Number(raw.inactive) || 0,
+    byRole: raw.byRole ?? {},
+    storage: raw.storage,
+  };
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
@@ -107,11 +132,13 @@ interface DrawerProps {
   onToggleActive: (user: User) => Promise<void>;
   onDelete: (id: string, name: string) => void;
   onOpenQuota: (user: User) => void;
+  onSyncStorage: (user: User) => Promise<void>;
+  syncingUser: string | null;
 }
 
 function UserDrawer({
   user, isSuperAdmin, isCurrentUser, onClose,
-  onSaveEdit, onToggleActive, onDelete, onOpenQuota,
+  onSaveEdit, onToggleActive, onDelete, onOpenQuota, onSyncStorage, syncingUser,
 }: DrawerProps) {
   const rc = ROLE_CONFIG[user.role];
   const storagePct = user.storageQuota > 0
@@ -267,6 +294,15 @@ function UserDrawer({
                 <Button fullWidth variant="secondary" leftIcon={<HardDrive size={13} />} onClick={() => onOpenQuota(user)}>
                   Update storage quota
                 </Button>
+                <Button
+                  fullWidth
+                  variant="secondary"
+                  leftIcon={<RefreshCw size={13} className={syncingUser === user.id ? "animate-spin" : ""} />}
+                  loading={syncingUser === user.id}
+                  onClick={() => onSyncStorage(user)}
+                >
+                  Sync storage usage
+                </Button>
                 {!isCurrentUser && (
                   <>
                     <Button fullWidth variant="secondary"
@@ -310,6 +346,7 @@ export default function AdminUsersPage() {
   const [allUsers,    setAllUsers]    = useState<User[]>([]);
   const [loading,     setLoading]     = useState(true);
   const [fetchError,  setFetchError]  = useState<string | null>(null);
+  const [adminStats,  setAdminStats]  = useState<AdminUserStats | null>(null);
   const [search,      setSearch]      = useState("");
   const [roleFilter,  setRoleFilter]  = useState<"all" | User["role"]>("all");
   const [statusFilter,setStatusFilter]= useState<"all" | "active" | "inactive">("all");
@@ -322,18 +359,30 @@ export default function AdminUsersPage() {
   const [creating,    setCreating]    = useState(false);
   const [deleteTarget,setDeleteTarget]= useState<{ id: string; name: string } | null>(null);
   const [deleting,    setDeleting]    = useState(false);
+  const [syncingUser, setSyncingUser] = useState<string | null>(null);
   const [form, setForm] = useState({ name: "", email: "", password: "", role: "user" });
 
   useEffect(() => {
     if (me && !isAdmin) router.push("/dashboard");
   }, [me, isAdmin, router]);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     setFetchError(null);
     try {
       const LIMIT = 100;
-      const first = await usersApi.list({ page: 1, limit: LIMIT });
+      const [firstResult, statsResult] = await Promise.allSettled([
+        usersApi.list({ page: 1, limit: LIMIT }),
+        usersApi.adminStats(),
+      ]);
+
+      if (statsResult.status === "fulfilled") {
+        setAdminStats(parseAdminStats(statsResult.value.data));
+      }
+
+      if (firstResult.status === "rejected") throw firstResult.reason;
+
+      const first = firstResult.value;
       const firstPage = parseUsers(first.data);
       const total     = parseTotal(first.data);
 
@@ -356,7 +405,12 @@ export default function AdminUsersPage() {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      void load();
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, [load]);
 
   /* ─── Create ─── */
   async function createUser(e: { preventDefault(): void }) {
@@ -368,7 +422,7 @@ export default function AdminUsersPage() {
       showToast.success("User created successfully");
       setShowCreate(false);
       setForm({ name: "", email: "", password: "", role: "user" });
-      load();
+      load(true);
     } catch (err) { handleApiError(err); }
     finally { setCreating(false); }
   }
@@ -427,31 +481,62 @@ export default function AdminUsersPage() {
       await usersApi.updateQuota(quotaUser.id, bytes);
       showToast.success("Quota updated");
       setShowQuota(false);
-      load();
+      setAllUsers((prev) => prev.map((u) => (u.id === quotaUser.id ? { ...u, storageQuota: bytes } : u)));
+      setSelected((prev) => prev?.id === quotaUser.id ? { ...prev, storageQuota: bytes } : prev);
+      load(true);
     } catch (err) { handleApiError(err); }
     finally { setCreating(false); }
   }
 
+  async function syncStorage(user: User) {
+    setSyncingUser(user.id);
+    try {
+      const res = await usersApi.syncStorage(user.id);
+      const storageUsed = Number(res.data?.data?.storageUsed ?? user.storageUsed);
+      setAllUsers((prev) => prev.map((u) => (u.id === user.id ? { ...u, storageUsed } : u)));
+      setSelected((prev) => prev?.id === user.id ? { ...prev, storageUsed } : prev);
+      showToast.success("Storage synced");
+      load(true);
+    } catch (err) {
+      handleApiError(err);
+    } finally {
+      setSyncingUser(null);
+    }
+  }
+
   /* ─── Filtered + paginated ─── */
-  const filtered = allUsers.filter((u) => {
-    const ms = !search || u.name.toLowerCase().includes(search.toLowerCase()) || u.email.toLowerCase().includes(search.toLowerCase());
-    const rs = roleFilter === "all" || u.role === roleFilter;
-    const ss = statusFilter === "all" || (statusFilter === "active" ? u.isActive : !u.isActive);
-    return ms && rs && ss;
-  });
+  const filtered = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return allUsers.filter((u) => {
+      const ms = !query || u.name.toLowerCase().includes(query) || u.email.toLowerCase().includes(query);
+      const rs = roleFilter === "all" || u.role === roleFilter;
+      const ss = statusFilter === "all" || (statusFilter === "active" ? u.isActive : !u.isActive);
+      return ms && rs && ss;
+    });
+  }, [allUsers, roleFilter, search, statusFilter]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const safePage   = Math.min(page, totalPages);
   const pageUsers  = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
-  useEffect(() => { setPage(1); }, [search, roleFilter, statusFilter]);
+  useEffect(() => {
+    const id = window.setTimeout(() => setPage(1), 0);
+    return () => window.clearTimeout(id);
+  }, [search, roleFilter, statusFilter]);
 
   /* ─── Stats ─── */
+  const derivedStats = useMemo(() => {
+    const totalUsed = allUsers.reduce((sum, user) => sum + (user.storageUsed || 0), 0);
+    const totalQuota = allUsers.reduce((sum, user) => sum + (user.storageQuota || 0), 0);
+    const highUsage = allUsers.filter((user) => user.storageQuota > 0 && user.storageUsed / user.storageQuota >= 0.8).length;
+    return { totalUsed, totalQuota, highUsage };
+  }, [allUsers]);
+
   const stats = [
-    { label: "Total",    val: allUsers.length,                              color: "bg-gray-50 dark:bg-zinc-800/50",     icon: <Users size={13} />,       ic: "text-gray-500" },
-    { label: "Active",   val: allUsers.filter((u) => u.isActive).length,    color: "bg-green-50 dark:bg-green-950/20",   icon: <CheckCircle2 size={13} />, ic: "text-green-500" },
-    { label: "Admins",   val: allUsers.filter((u) => u.role !== "user").length, color: "bg-orange-50 dark:bg-orange-950/20", icon: <Crown size={13} />, ic: "text-orange-500" },
-    { label: "Inactive", val: allUsers.filter((u) => !u.isActive).length,   color: "bg-red-50 dark:bg-red-950/20",       icon: <Ban size={13} />,          ic: "text-red-500" },
+    { label: "Total",    val: adminStats?.total ?? allUsers.length, icon: <Users size={13} />, ic: "text-gray-500", color: "bg-gray-50 dark:bg-zinc-800/50" },
+    { label: "Active",   val: adminStats?.active ?? allUsers.filter((u) => u.isActive).length, icon: <CheckCircle2 size={13} />, ic: "text-green-500", color: "bg-green-50 dark:bg-green-950/20" },
+    { label: "Admins",   val: (adminStats?.byRole.admin ?? 0) + (adminStats?.byRole.superadmin ?? 0) || allUsers.filter((u) => u.role !== "user").length, icon: <Crown size={13} />, ic: "text-orange-500", color: "bg-orange-50 dark:bg-orange-950/20" },
+    { label: "Inactive", val: adminStats?.inactive ?? allUsers.filter((u) => !u.isActive).length, icon: <Ban size={13} />, ic: "text-red-500", color: "bg-red-50 dark:bg-red-950/20" },
   ];
 
   return (
@@ -466,14 +551,14 @@ export default function AdminUsersPage() {
                 <Users size={18} className="text-orange-500" />
               </div>
               <div>
-                <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Users</h1>
+                <h1 className="text-2xl font-bold text-gray-900 dark:text-white">User Manager</h1>
                 <p className="text-xs text-gray-400 dark:text-gray-500">
                   {loading ? "Loading…" : `${allUsers.length} total · ${allUsers.filter((u) => u.isActive).length} active`}
                 </p>
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <Button variant="secondary" size="sm" leftIcon={<RefreshCw size={13} />} onClick={load}>Refresh</Button>
+              <Button variant="secondary" size="sm" leftIcon={<RefreshCw size={13} />} onClick={() => load()}>Refresh</Button>
               <Button leftIcon={<Plus size={15} />} onClick={() => setShowCreate(true)}>New User</Button>
             </div>
           </div>
@@ -486,7 +571,7 @@ export default function AdminUsersPage() {
                 <p className="text-sm font-semibold text-red-700 dark:text-red-400">Failed to load users</p>
                 <p className="mt-0.5 text-xs text-red-600 dark:text-red-500">{fetchError}</p>
               </div>
-              <button type="button" onClick={load}
+              <button type="button" onClick={() => load()}
                 className="shrink-0 rounded-lg border border-red-200 px-2.5 py-1 text-xs font-medium text-red-600 hover:bg-red-100 dark:border-red-800/30 dark:text-red-400 dark:hover:bg-red-950/40">
                 Retry
               </button>
@@ -505,6 +590,32 @@ export default function AdminUsersPage() {
                   : <p className="text-2xl font-bold text-gray-900 dark:text-white">{s.val}</p>}
               </div>
             ))}
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="rounded-2xl border border-gray-200/80 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+              <div className="flex items-center gap-2 text-sm font-semibold text-gray-800 dark:text-gray-200">
+                <HardDrive size={15} className="text-blue-500" />
+                Storage Used
+              </div>
+              <p className="mt-2 text-xs text-gray-500">
+                {formatBytes(adminStats?.storage?.totalUsedBytes ?? derivedStats.totalUsed)} of {formatBytes(adminStats?.storage?.totalQuotaBytes ?? derivedStats.totalQuota)}
+              </p>
+            </div>
+            <div className="rounded-2xl border border-gray-200/80 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+              <div className="flex items-center gap-2 text-sm font-semibold text-gray-800 dark:text-gray-200">
+                <AlertTriangle size={15} className="text-amber-500" />
+                High Usage
+              </div>
+              <p className="mt-2 text-xs text-gray-500">{derivedStats.highUsage} users at or above 80% quota</p>
+            </div>
+            <div className="rounded-2xl border border-gray-200/80 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+              <div className="flex items-center gap-2 text-sm font-semibold text-gray-800 dark:text-gray-200">
+                <DatabaseZap size={15} className="text-emerald-500" />
+                Sync Tools
+              </div>
+              <p className="mt-2 text-xs text-gray-500">Recalculate storage from active file records per user</p>
+            </div>
           </div>
 
           {/* ── Filters ── */}
@@ -631,6 +742,11 @@ export default function AdminUsersPage() {
                                   className="flex h-7 w-7 items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-zinc-800">
                                   <HardDrive size={13} />
                                 </button>
+                                <button type="button" onClick={() => syncStorage(user)} disabled={syncingUser === user.id}
+                                  title="Sync storage"
+                                  className="flex h-7 w-7 items-center justify-center rounded-lg text-gray-400 hover:bg-blue-50 hover:text-blue-500 disabled:opacity-60 dark:hover:bg-blue-950/20">
+                                  <RefreshCw size={13} className={syncingUser === user.id ? "animate-spin" : ""} />
+                                </button>
                                 {user.id !== me?.id && (
                                   <button type="button" onClick={() => toggleActive(user)}
                                     title={user.isActive ? "Deactivate" : "Activate"}
@@ -713,6 +829,8 @@ export default function AdminUsersPage() {
             onToggleActive={toggleActive}
             onDelete={(id, name) => setDeleteTarget({ id, name })}
             onOpenQuota={(u) => { setQuotaUser(u); setQuotaGB(String(Math.round((u.storageQuota || 10_737_418_240) / 1_073_741_824))); setShowQuota(true); }}
+            onSyncStorage={syncStorage}
+            syncingUser={syncingUser}
           />
         )}
 

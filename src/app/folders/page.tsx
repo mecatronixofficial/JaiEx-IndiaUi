@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import AuthGuard from "@/components/auth/AuthGuard";
+import { useAuth } from "@/contexts/AuthContext";
 import { foldersApi } from "@/lib/api";
 import type { Folder, FileItem } from "@/types";
 import { cn, formatBytes, formatRelative, formatDateTime, truncate } from "@/lib/utils";
@@ -14,7 +15,7 @@ import {
   FolderPlus, Home, RefreshCw, Trash2, Upload, Search, X,
   LayoutGrid, List, SortAsc, SortDesc,
   Folder as FolderIcon, ChevronLeft, CalendarDays, Clock3,
-  Database, GitBranch, Route, ShieldCheck,
+  Database, GitBranch, Route, ShieldCheck, UserRound,
 } from "lucide-react";
 import { handleApiError } from "@/lib/error-handler";
 import { showToast } from "@/lib/toast";
@@ -25,6 +26,30 @@ import Input from "@/components/ui/Input";
 type ViewMode  = "grid" | "list";
 type SortField = "name" | "size" | "createdAt";
 type SortDir   = "asc" | "desc";
+type FolderPerson = {
+  id?: string;
+  _id?: string;
+  name?: string;
+  email?: string;
+  role?: string;
+};
+type FolderWithPerson = Folder & {
+  createdBy?: string | FolderPerson;
+  uploadedBy?: string | FolderPerson;
+  owner?: FolderPerson;
+  creator?: FolderPerson;
+  userId?: string;
+  createdById?: string;
+  uploadedById?: string;
+};
+type OwnedFileItem = FileItem & {
+  uploadedBy?: string | FolderPerson;
+  owner?: FolderPerson;
+  userId?: string;
+  createdBy?: string | FolderPerson;
+  createdById?: string;
+  uploadedById?: string;
+};
 
 /* ─── Folder color palette ─── */
 const FOLDER_COLORS: Record<string, { bg: string; text: string; border: string; dot: string }> = {
@@ -116,10 +141,53 @@ function isRootFolder(folder: Folder): boolean {
   return !folder.parentId && !folder.parent;
 }
 
+function folderPerson(folder: Folder): FolderPerson | null {
+  const data = folder as FolderWithPerson;
+  const person = data.createdBy ?? data.uploadedBy ?? data.owner ?? data.creator;
+  if (person && typeof person === "object") return person;
+  return null;
+}
+
+function folderPersonLabel(folder: Folder): string {
+  const person = folderPerson(folder);
+  return person?.name ?? person?.email ?? "Unknown person";
+}
+
+function folderPersonEmail(folder: Folder): string {
+  return folderPerson(folder)?.email ?? "";
+}
+
+function personId(person: unknown): string | undefined {
+  if (typeof person === "string" && person.trim()) return person;
+  if (!person || typeof person !== "object") return undefined;
+  const record = person as FolderPerson;
+  return readString(record.id) ?? readString(record._id);
+}
+
+function itemOwnerIds(item: Folder | FileItem): string[] {
+  const data = item as FolderWithPerson & OwnedFileItem;
+  return [
+    readString(data.ownerId),
+    readString(data.userId),
+    readString(data.createdById),
+    readString(data.uploadedById),
+    personId(data.owner),
+    personId(data.createdBy),
+    personId(data.uploadedBy),
+    personId(data.creator),
+  ].filter((id): id is string => Boolean(id));
+}
+
+function isOwnedBy(item: Folder | FileItem, userId?: string): boolean {
+  if (!userId) return false;
+  return itemOwnerIds(item).includes(userId);
+}
+
 /* ════════════════════════════════════════════
    PAGE
 ════════════════════════════════════════════ */
 export default function FoldersPage() {
+  const { user, isLoading: authLoading } = useAuth();
   const [folders,          setFolders]          = useState<Folder[]>([]);
   const [currentFolder,    setCurrentFolder]    = useState<Folder | null>(null);
   const [files,            setFiles]            = useState<FileItem[]>([]);
@@ -141,6 +209,18 @@ export default function FoldersPage() {
   const [submitting,       setSubmitting]       = useState(false);
   const [showUpload,       setShowUpload]       = useState(false);
   const [tick,             setTick]             = useState(0);
+  const isSuperadmin = user?.role === "superadmin";
+  const currentUserId = user?.id ?? (user as { _id?: string } | null)?._id;
+
+  const visibleFolders = useCallback(
+    (items: Folder[]) => isSuperadmin ? items : items.filter((item) => isOwnedBy(item, currentUserId)),
+    [currentUserId, isSuperadmin],
+  );
+
+  const visibleFiles = useCallback(
+    (items: FileItem[]) => isSuperadmin ? items : items.filter((item) => isOwnedBy(item, currentUserId)),
+    [currentUserId, isSuperadmin],
+  );
 
   /* ── Trigger reload ── */
   const doRefresh = useCallback((silent = false) => {
@@ -151,6 +231,8 @@ export default function FoldersPage() {
 
   /* ── Load ── */
   useEffect(() => {
+    if (authLoading) return;
+
     let mounted = true;
     const doLoad = async () => {
       try {
@@ -158,13 +240,13 @@ export default function FoldersPage() {
           const res = await foldersApi.getContents(currentFolder.id);
           if (!mounted) return;
           const data = res.data?.data ?? res.data;
-          setFolders(normFolders(readArray(data, ["subfolders", "folders", "children"])));
-          setFiles(normFiles(readArray(data, ["files", "items"])));
+          setFolders(visibleFolders(normFolders(readArray(data, ["subfolders", "folders", "children"]))));
+          setFiles(visibleFiles(normFiles(readArray(data, ["files", "items"]))));
         } else {
           const res = await foldersApi.list();
           if (!mounted) return;
           const all = normFolders(readArray(res.data, ["folders", "items"]));
-          setFolders(all.filter(isRootFolder));
+          setFolders(visibleFolders(all.filter(isRootFolder)));
           setFiles([]);
         }
       } catch (err) {
@@ -175,8 +257,7 @@ export default function FoldersPage() {
     };
     doLoad();
     return () => { mounted = false; };
-  }, [currentFolder, tick]);
-
+  }, [authLoading, currentFolder, tick, visibleFiles, visibleFolders]);
   /* ── Navigation ── */
   function navigateTo(folder: Folder | null) {
     setSearch("");
@@ -200,8 +281,13 @@ export default function FoldersPage() {
 
   /* ── Filtered + sorted ── */
   const filteredFolders = useMemo(() => {
+    const q = search.toLowerCase();
     const items = search
-      ? folders.filter((f) => f.name.toLowerCase().includes(search.toLowerCase()))
+      ? folders.filter((f) =>
+          f.name.toLowerCase().includes(q) ||
+          folderPersonLabel(f).toLowerCase().includes(q) ||
+          folderPersonEmail(f).toLowerCase().includes(q),
+        )
       : folders;
     return [...items].sort((a, b) => {
       let diff = 0;
@@ -343,6 +429,12 @@ export default function FoldersPage() {
                           <span className="inline-flex items-center gap-1 rounded-full border border-gray-200/70 bg-white/70 px-2 py-0.5 dark:border-zinc-800 dark:bg-zinc-900/50">
                             <Clock3 size={10} />
                             Updated {formatRelative(latestUpdatedAt)}
+                          </span>
+                        )}
+                        {currentFolder && (
+                          <span className="inline-flex items-center gap-1 rounded-full border border-gray-200/70 bg-white/70 px-2 py-0.5 dark:border-zinc-800 dark:bg-zinc-900/50">
+                            <UserRound size={10} />
+                            Uploaded by {folderPersonLabel(currentFolder)}
                           </span>
                         )}
                         {currentFolder?.description && (
@@ -544,6 +636,7 @@ export default function FoldersPage() {
                                 { label: "Name",       field: "name" as SortField | null },
                                 { label: "Files",      field: null },
                                 { label: "Subfolders", field: null },
+                                { label: "Uploaded By",field: null },
                                 { label: "Size",       field: "size" as SortField | null },
                                 { label: "Created",    field: "createdAt" as SortField | null },
                                 { label: "",           field: null },
@@ -606,6 +699,23 @@ export default function FoldersPage() {
                                   </td>
                                   <td className="px-5 py-3.5 text-xs text-(--text-muted)">
                                     {folder.subfolderCount !== undefined ? folder.subfolderCount : "—"}
+                                  </td>
+                                  <td className="px-5 py-3.5">
+                                    <div className="flex items-center gap-2">
+                                      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-orange-100 text-[10px] font-bold text-orange-700 dark:bg-orange-950/30 dark:text-orange-300">
+                                        {folderPersonLabel(folder).slice(0, 2).toUpperCase()}
+                                      </div>
+                                      <div className="min-w-0">
+                                        <p className="max-w-36 truncate text-xs font-semibold text-(--text)">
+                                          {folderPersonLabel(folder)}
+                                        </p>
+                                        {folderPersonEmail(folder) && (
+                                          <p className="max-w-36 truncate text-[11px] text-(--text-muted)">
+                                            {folderPersonEmail(folder)}
+                                          </p>
+                                        )}
+                                      </div>
+                                    </div>
                                   </td>
                                   <td className="px-5 py-3.5 text-xs text-(--text-muted)">
                                     {folder.totalSize !== undefined ? formatBytes(folder.totalSize) : "—"}
@@ -891,6 +1001,10 @@ function EnhancedFolderCard({
 
       {/* Folder project metadata */}
       <div className="relative z-10 mt-3 space-y-1 text-[11px] text-(--text-muted) pointer-events-none">
+        <p className="flex items-center gap-1 truncate">
+          <UserRound size={10} />
+          <span className="truncate">Uploaded by {folderPersonLabel(folder)}</span>
+        </p>
         {folder.path && (
           <p className="flex items-center gap-1 truncate">
             <Route size={10} />

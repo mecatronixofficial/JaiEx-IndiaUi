@@ -30,9 +30,8 @@ import {
   Image as ImageIcon,
   Video,
   FileSpreadsheet,
-  TrendingUp,
+  Bell,
   Activity,
-  BarChart3,
   PieChart,
   Crown,
   Users,
@@ -69,6 +68,7 @@ interface NavItem {
   icon: ReactNode;
   badge?: string | number;
   minRole?: Role;
+  maxRole?: Role;
 }
 
 interface SectionDef {
@@ -84,6 +84,10 @@ interface SectionDef {
 /* ─── Role helpers ─── */
 const ROLE_RANK: Record<Role, number> = { USER: 0, ADMIN: 1, SUPERADMIN: 2 };
 const hasRole = (user: Role, min: Role) => ROLE_RANK[user] >= ROLE_RANK[min];
+const isWithinMaxRole = (user: Role, max: Role) => ROLE_RANK[user] <= ROLE_RANK[max];
+const canSeeNavItem = (role: Role, item: NavItem) =>
+  (!item.minRole || hasRole(role, item.minRole)) &&
+  (!item.maxRole || isWithinMaxRole(role, item.maxRole));
 const normalizeRole = (role?: string): Role => {
   const r = (role ?? "user").toUpperCase();
   if (r === "SUPERADMIN") return "SUPERADMIN";
@@ -147,15 +151,13 @@ const SECTIONS: SectionDef[] = [
     ],
   },
   {
-    key: "insights",
-    label: "Insights",
-    icon: <TrendingUp size={15} />,
-    accent: "orange",
+    key: "activity",
+    label: "Activity",
+    icon: <Activity size={15} />,
     openByDefault: false,
     items: [
-      { href: "/transactions", label: "Activity", icon: <Activity size={15} /> },
-      { href: "/admin/reports", label: "Reports", icon: <BarChart3 size={15} />, minRole: "ADMIN" },
-      { href: "/admin/analytics", label: "Analytics", icon: <PieChart size={15} />, minRole: "ADMIN" },
+      { href: "/notifications", label: "Notifications", icon: <Bell size={15} /> },
+      { href: "/transactions", label: "Transactions", icon: <ScrollText size={15} /> },
     ],
   },
   {
@@ -166,10 +168,15 @@ const SECTIONS: SectionDef[] = [
     accent: "orange",
     openByDefault: false,
     items: [
+      { href: "/admin", label: "Admin Overview", icon: <Gauge size={15} /> },
       { href: "/admin/users", label: "Users", icon: <Users size={15} /> },
-      { href: "/admin/roles", label: "Roles", icon: <ShieldCheck size={15} /> },
+      { href: "/admin/roles", label: "Roles", icon: <ShieldCheck size={15} />, maxRole: "ADMIN" },
+      { href: "/admin/files", label: "Files Manager", icon: <Files size={15} /> },
+      { href: "/admin/links", label: "Links Manager", icon: <Link2 size={15} /> },
       { href: "/admin/storage", label: "Storage Manager", icon: <HardDrive size={15} /> },
       { href: "/admin/transfers", label: "Transfer Manager", icon: <ArrowLeftRight size={15} /> },
+      { href: "/admin/activity", label: "Activity Log", icon: <Activity size={15} />, maxRole: "ADMIN" },
+      { href: "/admin/analytics", label: "Analytics", icon: <PieChart size={15} />, maxRole: "ADMIN" },
     ],
   },
   {
@@ -180,6 +187,8 @@ const SECTIONS: SectionDef[] = [
     accent: "red",
     openByDefault: false,
     items: [
+      { href: "/superadmin/analytics", label: "Analytics", icon: <PieChart size={15} /> },
+      { href: "/superadmin/roles", label: "Roles", icon: <ShieldCheck size={15} /> },
       { href: "/superadmin/system", label: "System Health", icon: <Activity size={15} /> },
       { href: "/superadmin/database", label: "Database", icon: <Database size={15} /> },
       { href: "/superadmin/domains", label: "Domains", icon: <Globe size={15} /> },
@@ -199,6 +208,37 @@ const QUERY_SCOPED_BASES: Record<string, string[]> = {
   "/files": ["type"],
   "/links": ["type"],
 };
+
+function isHrefActive(
+  href: string,
+  pathname: string,
+  searchParams: URLSearchParams,
+): boolean {
+  const [base, query] = href.split("?");
+  if (href === "/dashboard" || href === "/admin") return pathname === base;
+  if (base === "/transfers" && !query) return pathname === "/transfers";
+  if (query) {
+    if (pathname !== base) return false;
+    const params = new URLSearchParams(query);
+    for (const [k, v] of params.entries()) {
+      if (searchParams.get(k) !== v) return false;
+    }
+    return true;
+  }
+  if (pathname === base && QUERY_SCOPED_BASES[base]?.some((key) => searchParams.has(key))) {
+    return false;
+  }
+  return pathname === base || pathname.startsWith(`${base}/`);
+}
+
+function getActiveSectionKey(
+  pathname: string,
+  searchParams: URLSearchParams,
+): string | null {
+  return SECTIONS.find((section) =>
+    section.items.some((item) => isHrefActive(item.href, pathname, searchParams)),
+  )?.key ?? null;
+}
 
 /* ════════════════ SUB-COMPONENTS ════════════════ */
 
@@ -248,7 +288,7 @@ function WorkspaceSnapshot({
             <div className="mt-1 h-3 w-12 animate-pulse rounded bg-gray-200 dark:bg-zinc-800" />
           ) : (
             <p className="mt-0.5 font-semibold text-gray-700 dark:text-gray-200">
-              {usedPct.toFixed(0)}% used
+              {storageQuota > 0 ? `${usedPct.toFixed(0)}% used` : formatBytes(storageUsed)}
             </p>
           )}
         </div>
@@ -261,7 +301,9 @@ function WorkspaceSnapshot({
       </div>
       {!storageLoading && (
         <p className="mt-2 truncate text-[10px] text-gray-400 dark:text-gray-500">
-          {formatBytes(storageUsed)} of {formatBytes(storageQuota)} on Cloudflare R2
+          {storageQuota > 0
+            ? `${formatBytes(storageUsed)} of ${formatBytes(storageQuota)} on Cloudflare R2`
+            : `${formatBytes(storageUsed)} used on Cloudflare R2`}
         </p>
       )}
     </div>
@@ -363,9 +405,7 @@ function SectionGroup({
   isActive: (href: string) => boolean;
 }) {
   const accent = section.accent ?? "orange";
-  const visibleItems = section.items.filter(
-    (item) => !item.minRole || hasRole(role, item.minRole),
-  );
+  const visibleItems = section.items.filter((item) => canSeeNavItem(role, item));
 
   if (!visibleItems.length) return null;
 
@@ -486,6 +526,11 @@ function Sidebar({
         SECTIONS.map((s) => [s.key, s.openByDefault ?? false]),
       );
       if (typeof window === "undefined") return defaults;
+
+      const activeKey = getActiveSectionKey(
+        window.location.pathname,
+        new URLSearchParams(window.location.search),
+      );
       try {
         const stored = JSON.parse(
           localStorage.getItem(SECTIONS_KEY) ?? "{}",
@@ -493,11 +538,15 @@ function Sidebar({
         return Object.fromEntries(
           SECTIONS.map((s) => [
             s.key,
-            s.key in stored ? stored[s.key] : (s.openByDefault ?? false),
+            s.key === activeKey
+              ? true
+              : s.key in stored
+                ? stored[s.key]
+                : (s.openByDefault ?? false),
           ]),
         );
       } catch {
-        return defaults;
+        return activeKey ? { ...defaults, [activeKey]: true } : defaults;
       }
     },
   );
@@ -508,6 +557,25 @@ function Sidebar({
   useEffect(() => {
     if (mobileOpen) onMobileClose?.();
   }, [pathname, currentSearch, mobileOpen, onMobileClose]);
+
+  useEffect(() => {
+    const activeKey = getActiveSectionKey(
+      pathname,
+      new URLSearchParams(currentSearch),
+    );
+    if (!activeKey || openSections[activeKey]) return;
+
+    const id = window.setTimeout(() => {
+      setOpenSections((prev) => {
+        if (prev[activeKey]) return prev;
+        const next = { ...prev, [activeKey]: true };
+        localStorage.setItem(SECTIONS_KEY, JSON.stringify(next));
+        return next;
+      });
+    }, 0);
+
+    return () => window.clearTimeout(id);
+  }, [currentSearch, openSections, pathname]);
 
   /* Body scroll lock */
   useEffect(() => {
@@ -549,23 +617,7 @@ function Sidebar({
   }, []);
 
   const isActive = useCallback(
-    (href: string): boolean => {
-      const [base, query] = href.split("?");
-      if (href === "/dashboard" || href === "/admin") return pathname === base;
-      if (base === "/transfers" && !query) return pathname === "/transfers";
-      if (query) {
-        if (pathname !== base) return false;
-        const params = new URLSearchParams(query);
-        for (const [k, v] of params.entries()) {
-          if (searchParams.get(k) !== v) return false;
-        }
-        return true;
-      }
-      if (pathname === base && QUERY_SCOPED_BASES[base]?.some((key) => searchParams.has(key))) {
-        return false;
-      }
-      return pathname === base || pathname.startsWith(`${base}/`);
-    },
+    (href: string): boolean => isHrefActive(href, pathname, searchParams),
     [pathname, searchParams],
   );
 
@@ -573,6 +625,7 @@ function Sidebar({
     if (!storageQuota || storageQuota <= 0) return 0;
     return Math.min((storageUsed / storageQuota) * 100, 100);
   }, [storageUsed, storageQuota]);
+  const hasStorageQuota = storageQuota > 0;
   const storageAvailable = Math.max(storageQuota - storageUsed, 0);
 
   const storageGradient =
@@ -623,7 +676,7 @@ function Sidebar({
       visibleSections.reduce(
         (sum, section) =>
           sum +
-          section.items.filter((item) => !item.minRole || hasRole(role, item.minRole)).length,
+          section.items.filter((item) => canSeeNavItem(role, item)).length,
         0,
       ) +
       PREFERENCES.length,
@@ -769,9 +822,7 @@ function Sidebar({
           {collapsed ? (
             <>
               {visibleSections.map((section) => {
-                const items = section.items.filter(
-                  (item) => !item.minRole || hasRole(role, item.minRole),
-                );
+                const items = section.items.filter((item) => canSeeNavItem(role, item));
                 if (!items.length) return null;
                 return (
                   <div
@@ -855,8 +906,14 @@ function Sidebar({
                   <span className="font-semibold text-gray-700 dark:text-gray-200">
                     {formatBytes(storageUsed)}
                   </span>
-                  <span className="mx-0.5 text-gray-300 dark:text-zinc-700">/</span>
-                  {formatBytes(storageQuota)}
+                  {hasStorageQuota ? (
+                    <>
+                      <span className="mx-0.5 text-gray-300 dark:text-zinc-700">/</span>
+                      {formatBytes(storageQuota)}
+                    </>
+                  ) : (
+                    <span className="ml-1">used</span>
+                  )}
                 </span>
               )}
             </div>
@@ -865,9 +922,13 @@ function Sidebar({
               gradient={storageGradient}
             />
             {!storageLoading &&
-              (usedPct >= 90 ? (
+              (hasStorageQuota && usedPct >= 90 ? (
                 <p className="mt-1.5 flex items-center gap-1 text-[10px] font-semibold text-red-600 dark:text-red-400">
                   <AlertTriangle size={9} /> Storage almost full
+                </p>
+              ) : !hasStorageQuota ? (
+                <p className="mt-1.5 text-[10px] text-gray-400 dark:text-gray-500">
+                  No quota set
                 </p>
               ) : (
                 <div className="mt-1.5 flex items-center justify-between gap-2 text-[10px] text-gray-400 dark:text-gray-500">
@@ -885,7 +946,7 @@ function Sidebar({
         {collapsed && !storageLoading && (
           <div className="shrink-0 border-t border-gray-200/70 px-3 py-3 dark:border-zinc-800/60">
             <div
-              title={`${formatBytes(storageUsed)} / ${formatBytes(storageQuota)}`}
+              title={hasStorageQuota ? `${formatBytes(storageUsed)} / ${formatBytes(storageQuota)}` : `${formatBytes(storageUsed)} used`}
             >
               <StorageBar pct={usedPct} gradient={storageGradient} />
             </div>

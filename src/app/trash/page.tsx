@@ -375,105 +375,126 @@ export default function TrashPage() {
   return (
     <AuthGuard>
       <DashboardLayout>
-        <div className="space-y-5 pb-12">
+        <div className="animate-fade-in space-y-6 pb-12">
 
-          {/* ── Hero header ── */}
-          <div className="relative overflow-hidden rounded-2xl border border-red-200/50 bg-linear-to-br from-red-50 via-rose-50/40 to-white px-6 py-6 dark:border-red-900/20 dark:from-red-950/20 dark:via-rose-900/10 dark:to-zinc-900/0">
-            <div className="pointer-events-none absolute -right-12 -top-12 h-48 w-48 rounded-full bg-red-400/8 blur-3xl" />
-            <div className="relative flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-center gap-4">
-                <div className="flex h-13 w-13 shrink-0 items-center justify-center rounded-2xl bg-linear-to-br from-red-500 to-rose-500 text-white shadow-xl shadow-red-500/25">
-                  <Trash2 size={22} />
+          {/* ── Hero + stats ── */}
+          <section className="overflow-hidden rounded-[28px] border border-red-200/70 bg-linear-to-br from-red-50 via-white to-rose-50 shadow-sm dark:border-red-900/40 dark:from-red-950/35 dark:via-zinc-950 dark:to-stone-950">
+            <div className="flex flex-col gap-6 p-5 sm:p-6 lg:flex-row lg:items-end lg:justify-between">
+              <div className="flex min-w-0 items-start gap-4">
+                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-red-500 text-white shadow-lg shadow-red-500/20">
+                  <Trash2 size={24} />
                 </div>
-                <div>
-                  <h1 className="text-xl font-extrabold tracking-tight text-(--text)">Trash</h1>
-                  <p className="mt-0.5 text-sm text-(--text-muted)">
-                    {loading
-                      ? "Loading…"
-                      : hasAnyItems
-                      ? `${files.length} file${files.length !== 1 ? "s" : ""} · ${folders.length} folder${folders.length !== 1 ? "s" : ""} · ${formatBytes(totalSize)}`
-                      : "Trash is empty"}
+                <div className="min-w-0">
+                  <h1 className="text-2xl font-extrabold tracking-tight text-(--text-primary)">Trash</h1>
+                  <p className="mt-1 max-w-2xl text-sm text-(--text-muted)">
+                    Restore deleted files and folders, or permanently remove items you no longer need.
                   </p>
+                  <div className="mt-4 flex flex-wrap items-center gap-2">
+                    <span className="inline-flex items-center gap-1.5 rounded-full border border-red-200 bg-white/80 px-3 py-1 text-xs font-semibold text-red-700 dark:border-red-900/60 dark:bg-zinc-950/70 dark:text-red-300">
+                      <AlertTriangle size={12} />
+                      30 day recovery window
+                    </span>
+                    <span className="inline-flex items-center gap-1.5 rounded-full border border-(--border) bg-white/70 px-3 py-1 text-xs font-medium text-(--text-secondary) dark:bg-zinc-950/60">
+                      <Clock size={12} />
+                      {loading ? "Checking expiry" : nextExpiry !== null ? `Earliest expiry ${nextExpiry}d` : "No deleted items"}
+                    </span>
+                  </div>
                 </div>
               </div>
 
-              <div className="flex shrink-0 items-center gap-2">
-                <div className="flex overflow-hidden rounded-xl border border-gray-200/80 bg-white/80 backdrop-blur-sm dark:border-zinc-700/60 dark:bg-zinc-900/80">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="grid h-10 grid-cols-2 rounded-xl border border-red-200 bg-white p-1 dark:border-red-900/60 dark:bg-zinc-950">
                   {(["list", "grid"] as ViewMode[]).map((mode) => (
-                    <button key={mode} type="button" onClick={() => setView(mode)} aria-label={`${mode} view`}
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setView(mode)}
+                      aria-label={`${mode} view`}
                       className={cn(
-                        "flex h-9 w-9 items-center justify-center transition-all",
+                        "flex h-8 w-9 items-center justify-center rounded-lg transition",
                         view === mode
                           ? "bg-red-500 text-white"
-                          : "text-(--text-muted) hover:bg-gray-100 hover:text-red-500 dark:hover:bg-zinc-800",
-                      )}>
+                          : "text-(--text-muted) hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/30",
+                      )}
+                    >
                       {mode === "grid" ? <LayoutGrid size={15} /> : <List size={15} />}
                     </button>
                   ))}
                 </div>
 
-                <button type="button" onClick={refresh} disabled={loading}
-                  className="flex items-center gap-1.5 rounded-xl border border-gray-200/80 bg-white/80 px-3 py-2 text-xs font-semibold text-(--text-muted) shadow-sm backdrop-blur-sm transition-colors hover:text-(--text) disabled:opacity-50 dark:border-zinc-700/60 dark:bg-zinc-900/80">
-                  <RefreshCw size={12} className={loading ? "animate-spin" : ""} /> Refresh
+                <button
+                  type="button"
+                  onClick={refresh}
+                  disabled={loading}
+                  className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-red-200 bg-white px-4 text-sm font-semibold text-red-700 shadow-sm transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-red-900/60 dark:bg-zinc-950 dark:text-red-300 dark:hover:bg-red-950/30"
+                >
+                  <RefreshCw size={15} className={loading ? "animate-spin" : ""} />
+                  Refresh
                 </button>
 
                 {hasAnyItems && !loading && (
-                  <button type="button" onClick={() => setShowEmptyConfirm(true)} disabled={bulkLoading}
-                    className="flex items-center gap-1.5 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-600 transition-colors hover:bg-red-100 disabled:opacity-50 dark:border-red-900/30 dark:bg-red-900/10 dark:text-red-400">
-                    <Trash2 size={12} /> Empty Trash
+                  <button
+                    type="button"
+                    onClick={() => setShowEmptyConfirm(true)}
+                    disabled={bulkLoading}
+                    className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-red-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <Trash2 size={15} />
+                    Empty Trash
                   </button>
                 )}
               </div>
             </div>
-          </div>
 
-          {/* ── Stats ── */}
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            {[
-              {
-                label: "Files",
-                value: loading ? "—" : String(files.length),
-                sub: loading ? "" : formatBytes(files.reduce((s, f) => s + (f.size ?? 0), 0)),
-                icon: <FileX size={15} />,
-                gradient: "from-red-500 to-rose-500",
-              },
-              {
-                label: "Folders",
-                value: loading ? "—" : String(folders.length),
-                sub: loading ? "" : formatBytes(folders.reduce((s, f) => s + (f.totalSize ?? 0), 0)),
-                icon: <FolderIcon size={15} />,
-                gradient: "from-orange-500 to-amber-500",
-              },
-              {
-                label: "Total Size",
-                value: loading ? "—" : formatBytes(totalSize),
-                sub: loading ? "" : `${files.length + folders.length} items`,
-                icon: <HardDrive size={15} />,
-                gradient: "from-purple-500 to-violet-500",
-              },
-              {
-                label: "Earliest Expiry",
-                value: loading ? "—" : nextExpiry !== null ? `${nextExpiry}d` : "—",
-                sub: loading ? "" : nextExpiry !== null ? "until auto-delete" : "no items",
-                icon: <Clock size={15} />,
-                gradient: nextExpiry !== null && nextExpiry <= 5 ? "from-red-500 to-rose-500" : "from-gray-500 to-zinc-500",
-              },
-            ].map((s) => (
-              <div key={s.label} className="relative overflow-hidden rounded-xl border border-gray-100 bg-white p-4 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md dark:border-zinc-800/80 dark:bg-zinc-900">
-                <div className={`mb-2.5 flex h-8 w-8 items-center justify-center rounded-lg bg-linear-to-br ${s.gradient} text-white shadow-sm`}>
-                  {s.icon}
+            <div className="grid border-t border-red-100 bg-white/65 dark:border-red-900/30 dark:bg-zinc-950/45 sm:grid-cols-2 xl:grid-cols-4">
+              {[
+                {
+                  label: "Files",
+                  value: loading ? "--" : String(files.length),
+                  sub: loading ? "" : formatBytes(files.reduce((s, f) => s + (f.size ?? 0), 0)),
+                  icon: FileX,
+                  color: "text-red-500",
+                },
+                {
+                  label: "Folders",
+                  value: loading ? "--" : String(folders.length),
+                  sub: loading ? "" : formatBytes(folders.reduce((s, f) => s + (f.totalSize ?? 0), 0)),
+                  icon: FolderIcon,
+                  color: "text-orange-500",
+                },
+                {
+                  label: "Total Size",
+                  value: loading ? "--" : formatBytes(totalSize),
+                  sub: loading ? "" : `${files.length + folders.length} items`,
+                  icon: HardDrive,
+                  color: "text-violet-500",
+                },
+                {
+                  label: "Earliest Expiry",
+                  value: loading ? "--" : nextExpiry !== null ? `${nextExpiry}d` : "--",
+                  sub: loading ? "" : nextExpiry !== null ? "until auto-delete" : "no items",
+                  icon: Clock,
+                  color: nextExpiry !== null && nextExpiry <= 5 ? "text-red-500" : "text-slate-500",
+                },
+              ].map((item) => (
+                <div key={item.label} className="flex items-center gap-3 border-b border-red-100 px-5 py-4 last:border-b-0 dark:border-red-900/25 sm:odd:border-r xl:border-b-0 xl:border-r xl:last:border-r-0">
+                  <div className={cn("flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-(--bg-secondary)", item.color)}>
+                    <item.icon size={18} />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium text-(--text-muted)">{item.label}</p>
+                    <p className="truncate text-sm font-bold text-(--text-primary)">{item.value}</p>
+                    {item.sub && <p className="truncate text-xs text-(--text-muted)">{item.sub}</p>}
+                  </div>
                 </div>
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-(--text-muted)">{s.label}</p>
-                <p className="mt-0.5 text-lg font-bold text-(--text)">{s.value}</p>
-                {s.sub && <p className="mt-0.5 text-[10px] text-(--text-muted)">{s.sub}</p>}
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          </section>
 
           {/* ── Warning banner ── */}
           {hasAnyItems && !loading && (
-            <div className="flex items-start gap-3 rounded-xl border border-amber-200/80 bg-amber-50 px-4 py-3 dark:border-amber-900/30 dark:bg-amber-900/10">
-              <AlertTriangle size={14} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
+            <div className="flex items-start gap-3 rounded-2xl border border-amber-200/80 bg-amber-50 px-4 py-3 dark:border-amber-900/30 dark:bg-amber-900/10">
+              <AlertTriangle size={16} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
               <p className="text-sm text-amber-700 dark:text-amber-400">
                 Items in trash are{" "}
                 <span className="font-bold">permanently deleted after 30 days</span>. Restore files or folders you want to keep.
@@ -488,7 +509,7 @@ export default function TrashPage() {
 
           {/* ── Bulk action bar ── */}
           {totalSelected > 0 && (
-            <div className="flex flex-wrap items-center gap-3 rounded-xl border border-orange-200/80 bg-orange-50 px-4 py-3 dark:border-orange-900/30 dark:bg-orange-900/10">
+            <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-orange-200/80 bg-orange-50 px-4 py-3 shadow-sm dark:border-orange-900/30 dark:bg-orange-900/10">
               <button type="button" aria-label="Toggle select all" onClick={toggleSelectAll}
                 className="text-orange-500 transition-colors hover:text-orange-600">
                 {allCurrentSelected ? <CheckSquare size={16} /> : <Square size={16} />}
@@ -520,9 +541,9 @@ export default function TrashPage() {
 
           {/* ── Tabs + filters toolbar ── */}
           {(hasAnyItems || loading) && (
-            <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+            <section className="flex flex-col gap-3 rounded-2xl border border-(--border) bg-(--bg-card) p-3 shadow-sm sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
               {/* Tab bar */}
-              <div className="flex items-center gap-1 rounded-xl border border-gray-200/80 bg-white p-1 dark:border-zinc-700/60 dark:bg-zinc-900">
+              <div className="flex items-center gap-1 rounded-xl border border-(--border) bg-(--bg-secondary) p-1">
                 {([
                   { value: "all",     label: "All",     count: files.length + folders.length },
                   { value: "files",   label: "Files",   count: files.length },
@@ -533,7 +554,7 @@ export default function TrashPage() {
                       "flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-all",
                       tab === t.value
                         ? "bg-red-500 text-white shadow-sm"
-                        : "text-(--text-muted) hover:bg-gray-50 hover:text-(--text) dark:hover:bg-zinc-800",
+                        : "text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)",
                     )}>
                     {t.label}
                     {!loading && (
@@ -541,7 +562,7 @@ export default function TrashPage() {
                         "rounded-full px-1.5 py-0.5 text-[9px] font-bold",
                         tab === t.value
                           ? "bg-white/20 text-white"
-                          : "bg-gray-100 text-gray-500 dark:bg-zinc-700 dark:text-gray-400",
+                          : "bg-(--bg-card) text-(--text-muted)",
                       )}>
                         {t.count}
                       </span>
@@ -553,15 +574,15 @@ export default function TrashPage() {
               <div className="flex flex-wrap items-center gap-2">
                 {/* Type filter chips — visible on files tab */}
                 {tab !== "folders" && (
-                  <div className="flex items-center gap-1">
-                    <Filter size={11} className="text-gray-400" />
+                  <div className="flex flex-wrap items-center gap-1">
+                    <Filter size={12} className="text-(--text-muted)" />
                     {TYPE_FILTERS.map((tf) => (
                       <button key={tf.value} type="button" onClick={() => setTypeFilter(tf.value)}
                         className={cn(
-                          "flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-medium transition",
+                          "flex h-8 items-center gap-1 rounded-lg border px-2.5 text-xs font-semibold transition",
                           typeFilter === tf.value
                             ? "border-red-300 bg-red-50 text-red-600 dark:border-red-800/40 dark:bg-red-950/20 dark:text-red-400"
-                            : "border-gray-200 bg-white text-gray-500 hover:border-gray-300 dark:border-zinc-700 dark:bg-zinc-900 dark:text-gray-400",
+                            : "border-(--border) bg-(--bg-card) text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)",
                         )}>
                         {tf.icon} {tf.label}
                       </button>
@@ -570,20 +591,20 @@ export default function TrashPage() {
                 )}
 
                 {/* Sort buttons */}
-                <div className="flex items-center gap-1">
+                <div className="flex items-center rounded-xl border border-(--border) bg-(--bg-secondary) p-1">
                   {(["name", "size", "deleted"] as SortField[]).map((f) => (
                     <button key={f} type="button" onClick={() => handleSort(f)}
                       className={cn(
-                        "flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-medium capitalize transition",
+                        "flex h-8 items-center gap-1 rounded-lg px-2.5 text-xs font-semibold capitalize transition",
                         sortField === f
-                          ? "border-orange-300 bg-orange-50 text-orange-600 dark:border-orange-700 dark:bg-orange-950/20 dark:text-orange-400"
-                          : "border-gray-200 bg-white text-gray-500 hover:border-gray-300 dark:border-zinc-700 dark:bg-zinc-900 dark:text-gray-400",
+                          ? "bg-red-500 text-white shadow-sm"
+                          : "text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)",
                       )}>
                       {f === "deleted" ? "Date" : f.charAt(0).toUpperCase() + f.slice(1)}
                       {sortField === f && (
                         sortDir === "asc"
-                          ? <SortAsc size={10} />
-                          : <SortDesc size={10} />
+                          ? <SortAsc size={12} />
+                          : <SortDesc size={12} />
                       )}
                     </button>
                   ))}
@@ -591,38 +612,38 @@ export default function TrashPage() {
 
                 {/* Search */}
                 <div className="relative">
-                  <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                  <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-(--text-muted)" />
                   <input
                     type="text"
-                    placeholder="Search…"
+                    placeholder="Search trash"
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
-                    className="h-9 w-48 rounded-xl border border-gray-200 bg-white pl-8 pr-7 text-sm text-(--text) outline-none transition-all placeholder:text-gray-400 focus:border-red-400 focus:ring-2 focus:ring-red-500/10 dark:border-zinc-700 dark:bg-zinc-900"
+                    className="h-10 w-full rounded-xl border border-(--border) bg-(--bg-card) pl-9 pr-9 text-sm text-(--text-primary) outline-none transition-all placeholder:text-(--text-muted) focus:border-red-400 focus:ring-2 focus:ring-red-500/10 sm:w-56"
                   />
                   {search && (
                     <button type="button" aria-label="Clear search" onClick={() => setSearch("")}
-                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
-                      <X size={12} />
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-(--text-muted) hover:text-(--text-primary)">
+                      <X size={14} />
                     </button>
                   )}
                 </div>
               </div>
-            </div>
+            </section>
           )}
 
           {/* ── Content ── */}
           {loading ? (
-            <div className="flex min-h-64 items-center justify-center">
+            <div className="flex min-h-80 items-center justify-center rounded-2xl border border-dashed border-(--border) bg-(--bg-card)">
               <Spinner size={28} />
             </div>
 
           ) : !hasAnyItems ? (
-            <div className="flex flex-col items-center justify-center gap-4 rounded-2xl border border-gray-200/80 bg-white py-24 text-center shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-              <div className="flex h-20 w-20 items-center justify-center rounded-3xl bg-gray-50 dark:bg-zinc-800">
-                <Trash2 size={30} className="text-gray-300 dark:text-zinc-600" />
+            <div className="flex min-h-80 flex-col items-center justify-center gap-4 rounded-2xl border border-dashed border-(--border) bg-(--bg-card) px-6 text-center">
+              <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-(--bg-secondary)">
+                <Trash2 size={28} className="text-(--text-muted)" />
               </div>
               <div>
-                <p className="text-lg font-bold text-(--text)">Trash is empty</p>
+                <p className="text-lg font-bold text-(--text-primary)">Trash is empty</p>
                 <p className="mt-0.5 text-sm text-(--text-muted)">
                   Deleted files and folders will appear here for 30 days before being permanently removed.
                 </p>
@@ -630,12 +651,12 @@ export default function TrashPage() {
             </div>
 
           ) : !hasFilteredItems ? (
-            <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-gray-200/80 bg-white py-20 text-center shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-              <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gray-50 dark:bg-zinc-800">
-                <Search size={22} className="text-gray-300 dark:text-zinc-600" />
+            <div className="flex min-h-72 flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-(--border) bg-(--bg-card) px-6 text-center">
+              <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-(--bg-secondary)">
+                <Search size={22} className="text-(--text-muted)" />
               </div>
               <div>
-                <p className="font-semibold text-(--text)">No items match your filter</p>
+                <p className="font-semibold text-(--text-primary)">No items match your filter</p>
                 <p className="mt-0.5 text-sm text-(--text-muted)">Try a different keyword or type.</p>
               </div>
             </div>
@@ -712,10 +733,10 @@ export default function TrashPage() {
 
           ) : (
             /* ── List view ── */
-            <div className="overflow-hidden rounded-2xl border border-gray-200/80 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+            <div className="overflow-hidden rounded-2xl border border-(--border) bg-(--bg-card) shadow-sm">
               <div className="overflow-x-auto">
                 <table className="w-full border-collapse text-sm">
-                  <thead className="border-b border-gray-100 bg-gray-50/80 dark:border-zinc-800 dark:bg-zinc-800/30">
+                  <thead className="border-b border-(--border) bg-(--bg-secondary)">
                     <tr>
                       <th className="w-12 px-4 py-3.5 text-left" scope="col">
                         <input
@@ -747,11 +768,11 @@ export default function TrashPage() {
                       ))}
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-gray-50 dark:divide-zinc-800/60">
+                  <tbody className="divide-y divide-(--border)">
 
                     {/* ── Folder rows ── */}
                     {showFolders && filteredFolders.map((folder) => (
-                      <tr key={`folder-${folder.id}`} className="transition-colors hover:bg-gray-50/60 dark:hover:bg-zinc-800/30">
+                      <tr key={`folder-${folder.id}`} className="transition-colors hover:bg-(--bg-hover)">
                         <td className="px-4 py-3.5">
                           <input type="checkbox"
                             aria-label={`Select folder ${folder.name}`}
@@ -814,7 +835,7 @@ export default function TrashPage() {
 
                     {/* ── File rows ── */}
                     {showFiles && filteredFiles.map((file) => (
-                      <tr key={`file-${file.id}`} className="transition-colors hover:bg-gray-50/60 dark:hover:bg-zinc-800/30">
+                      <tr key={`file-${file.id}`} className="transition-colors hover:bg-(--bg-hover)">
                         <td className="px-4 py-3.5">
                           <input type="checkbox"
                             aria-label={`Select ${file.name}`}
@@ -885,7 +906,7 @@ export default function TrashPage() {
                 </table>
               </div>
               {/* Table footer */}
-              <div className="border-t border-gray-100 px-5 py-3 dark:border-zinc-800">
+              <div className="border-t border-(--border) px-5 py-3">
                 <p className="text-xs text-(--text-muted)">
                   {showFiles && (
                     <><span className="font-semibold text-(--text)">{filteredFiles.length}</span> file{filteredFiles.length !== 1 ? "s" : ""}</>

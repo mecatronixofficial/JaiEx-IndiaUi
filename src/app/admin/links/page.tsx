@@ -9,7 +9,7 @@ import {
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import AuthGuard from "@/components/auth/AuthGuard";
 import { EmptyState, Spinner, Avatar } from "@/components/ui";
-import { adminApi } from "@/lib/api";
+import { adminApi, linksApi } from "@/lib/api";
 import { formatRelative, formatDateTime } from "@/lib/utils";
 import { handleApiError } from "@/lib/error-handler";
 import { showToast } from "@/lib/toast";
@@ -17,6 +17,8 @@ import { copyToClipboard } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
 import { useRouter } from "next/navigation";
 import Card from "@/components/ui/Card";
+import { getLinksFromResponse, getTransfersFromResponse } from "@/lib/transfers";
+import { SharedLink, Transfer } from "@/types";
 
 /* ─── Types ─── */
 interface AdminLink {
@@ -38,12 +40,22 @@ interface AdminLink {
   createdAt: string;
 }
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
-function mapLink(raw: any): AdminLink {
+function linkUrl(raw: Partial<SharedLink>, type?: string) {
+  if (raw.url) return raw.url;
+  if (!raw.shortCode) return undefined;
+  const origin = typeof window === "undefined" ? "" : window.location.origin;
+  return `${origin}/${type === "transfer" ? "t" : "l"}/${raw.shortCode}`;
+}
+
+function mapLink(raw: Partial<SharedLink> & {
+  _id?: string;
+  transfer?: { title?: string };
+  transferTitle?: string;
+}): AdminLink {
   return {
     id:            raw.id ?? raw._id ?? "",
     shortCode:     raw.shortCode,
-    url:           raw.url,
+    url:           linkUrl(raw, raw.type),
     type:          raw.type ?? "share",
     status:        raw.status ?? "active",
     permission:    raw.permission ?? "view",
@@ -60,21 +72,60 @@ function mapLink(raw: any): AdminLink {
   };
 }
 
-function parseLinks(data: any): AdminLink[] {
-  const arr =
-    Array.isArray(data?.links)       ? data.links       :
-    Array.isArray(data?.data?.links) ? data.data.links  :
-    Array.isArray(data?.data?.items) ? data.data.items  :
-    Array.isArray(data?.items)       ? data.items       :
-    Array.isArray(data?.data)        ? data.data        :
-    Array.isArray(data)              ? data             : [];
-  return arr.map(mapLink).filter((l: AdminLink) => l.id);
+function parseLinks(data: unknown): AdminLink[] {
+  return getLinksFromResponse(data).map(mapLink).filter((l) => l.id);
 }
 
-function parseTotal(data: any): number {
-  return data?.total ?? data?.data?.total ?? data?.meta?.total ?? data?.count ?? 0;
+function linksFromTransfers(data: unknown): AdminLink[] {
+  return getTransfersFromResponse(data)
+    .map((transfer: Transfer) => {
+      if (!transfer.link) return null;
+      return mapLink({
+        ...transfer.link,
+        id: transfer.link.id ?? transfer.linkId ?? transfer.id,
+        type: "transfer",
+        transferId: transfer.id,
+        transferTitle: transfer.title,
+        status: transfer.link.status ?? transfer.status,
+        views: transfer.link.views ?? transfer.views,
+        downloads: transfer.link.downloads ?? transfer.downloads,
+        fileCount: transfer.link.fileCount ?? transfer.fileCount,
+        totalSize: transfer.link.totalSize ?? transfer.totalSize,
+        createdAt: transfer.link.createdAt ?? transfer.createdAt,
+      });
+    })
+    .filter((link): link is AdminLink => Boolean(link?.id));
 }
-/* eslint-enable @typescript-eslint/no-explicit-any */
+
+function dedupeLinks(lists: AdminLink[][]): AdminLink[] {
+  const map = new Map<string, AdminLink>();
+  lists.flat().forEach((link) => {
+    const key = link.id || link.shortCode || link.url;
+    if (!key) return;
+    map.set(key, { ...map.get(key), ...link });
+  });
+  return Array.from(map.values()).sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+  );
+}
+
+function readRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? value as Record<string, unknown> : {};
+}
+
+function parseTotal(data: unknown): number {
+  const root = readRecord(data);
+  const inner = readRecord(root.data ?? root);
+  const nested = readRecord(inner.data ?? inner);
+  const meta = readRecord(root.meta ?? inner.meta ?? nested.meta);
+  const pagination = readRecord(root.pagination ?? inner.pagination ?? nested.pagination);
+
+  return Number(
+    nested.total ?? inner.total ?? root.total ??
+    meta.total ?? pagination.total ??
+    nested.count ?? inner.count ?? root.count ?? 0,
+  ) || 0;
+}
 
 /* ─── Helpers ─── */
 function typeIcon(type?: string) {
@@ -122,13 +173,53 @@ export default function AdminLinksPage() {
     if (!isAdmin) return;
     setLoading(true);
     try {
-      const params: Record<string, unknown> = { page, limit: PAGE_SIZE };
-      if (status !== "all")     params.status = status;
-      if (typeFilter !== "all") params.type   = typeFilter;
+      const adminParams: {
+        page: number;
+        limit: number;
+        status?: "active" | "expired" | "disabled";
+        type?: "share" | "transfer";
+      } = { page, limit: PAGE_SIZE };
+      const linkParams: {
+        page: number;
+        limit: number;
+        status?: string;
+      } = { page, limit: PAGE_SIZE };
+      const transferParams: {
+        page: number;
+        limit: number;
+        status?: "active" | "expired" | "disabled";
+      } = { page, limit: PAGE_SIZE };
 
-      const res = await adminApi.links(params);
-      setLinks(parseLinks(res.data));
-      setTotal(parseTotal(res.data));
+      if (status !== "all") {
+        adminParams.status = status;
+        linkParams.status = status;
+        transferParams.status = status;
+      }
+      if (typeFilter !== "all") adminParams.type = typeFilter;
+
+      const [adminLinksRes, allLinksRes, transfersRes] = await Promise.allSettled([
+        adminApi.links(adminParams),
+        linksApi.adminList(linkParams),
+        typeFilter === "share"
+          ? Promise.resolve({ data: [] })
+          : adminApi.transfers(transferParams),
+      ]);
+
+      const adminLinks = adminLinksRes.status === "fulfilled" ? parseLinks(adminLinksRes.value.data) : [];
+      const allLinks = allLinksRes.status === "fulfilled" ? parseLinks(allLinksRes.value.data) : [];
+      const transferLinks = transfersRes.status === "fulfilled" ? linksFromTransfers(transfersRes.value.data) : [];
+      const merged = dedupeLinks([
+        typeFilter === "transfer" ? [] : allLinks,
+        adminLinks,
+        typeFilter === "share" ? [] : transferLinks,
+      ]).filter((link) => typeFilter === "all" || link.type === typeFilter);
+
+      setLinks(merged);
+      setTotal(Math.max(
+        parseTotal(adminLinksRes.status === "fulfilled" ? adminLinksRes.value.data : {}),
+        parseTotal(allLinksRes.status === "fulfilled" ? allLinksRes.value.data : {}),
+        merged.length,
+      ));
     } catch (err) {
       handleApiError(err);
     } finally {
@@ -136,8 +227,9 @@ export default function AdminLinksPage() {
     }
   }, [isAdmin, page, status, typeFilter]);
 
-  useEffect(() => { load(); }, [load, fetchKey]);
-  useEffect(() => { setPage(1); }, [search, status, typeFilter]);
+  useEffect(() => {
+    void Promise.resolve().then(() => load());
+  }, [load, fetchKey]);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
@@ -200,7 +292,10 @@ export default function AdminLinksPage() {
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
               <div className="relative flex-1">
                 <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                <input value={search} onChange={(e) => setSearch(e.target.value)}
+                <input value={search} onChange={(e) => {
+                  setSearch(e.target.value);
+                  setPage(1);
+                }}
                   placeholder="Search by code, title, or user…"
                   className="h-9 w-full rounded-xl border border-gray-200 bg-white pl-9 pr-4 text-sm outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-500/15 dark:border-zinc-700 dark:bg-zinc-900 dark:text-white"
                 />
@@ -209,7 +304,10 @@ export default function AdminLinksPage() {
                 <div className="flex items-center gap-1">
                   <Filter size={12} className="text-gray-400" />
                   {STATUS_FILTERS.map((s) => (
-                    <button key={s} type="button" onClick={() => setStatus(s)}
+                    <button key={s} type="button" onClick={() => {
+                      setStatus(s);
+                      setPage(1);
+                    }}
                       className={`rounded-lg border px-2.5 py-1.5 text-xs font-medium capitalize transition ${
                         status === s
                           ? "border-orange-300 bg-orange-50 text-orange-700 dark:border-orange-700 dark:bg-orange-950/20 dark:text-orange-400"
@@ -220,7 +318,10 @@ export default function AdminLinksPage() {
                   ))}
                 </div>
                 {(["all", "share", "transfer"] as const).map((t) => (
-                  <button key={t} type="button" onClick={() => setTypeFilter(t)}
+                  <button key={t} type="button" onClick={() => {
+                    setTypeFilter(t);
+                    setPage(1);
+                  }}
                     className={`rounded-lg border px-2.5 py-1.5 text-xs font-medium capitalize transition ${
                       typeFilter === t
                         ? "border-purple-300 bg-purple-50 text-purple-700 dark:border-purple-700 dark:bg-purple-950/20 dark:text-purple-400"
@@ -260,10 +361,16 @@ export default function AdminLinksPage() {
                               </p>
                               <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                                 {l.url && (
-                                  <button type="button" aria-label="Copy link" onClick={() => handleCopy(l.url)}
-                                    className="flex h-6 w-6 items-center justify-center rounded-md text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-zinc-800">
-                                    <Copy size={11} />
-                                  </button>
+                                  <>
+                                    <button type="button" aria-label="Copy link" onClick={() => handleCopy(l.url)}
+                                      className="flex h-6 w-6 items-center justify-center rounded-md text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-zinc-800">
+                                      <Copy size={11} />
+                                    </button>
+                                    <a href={l.url} target="_blank" rel="noopener noreferrer" aria-label="Open link"
+                                      className="flex h-6 w-6 items-center justify-center rounded-md text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-zinc-800">
+                                      <ExternalLink size={11} />
+                                    </a>
+                                  </>
                                 )}
                               </div>
                             </div>

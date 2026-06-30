@@ -35,6 +35,9 @@ import {
   Mail,
   ArrowLeftRight,
   LayoutDashboard,
+  Trash2,
+  Star,
+  UserCog,
 } from "lucide-react";
 
 import { notificationsApi, searchApi } from "@/lib/api";
@@ -46,6 +49,7 @@ import { useTheme } from "@/contexts/ThemeContext";
 import { useDebounce } from "@/hooks/useDebounce";
 import { showToast } from "@/lib/toast";
 import Button from "../ui/Button";
+import { getNotificationsFromResponse } from "@/lib/notifications";
 
 /* =========================
    TYPES
@@ -81,6 +85,16 @@ const NOTIF_ICONS: Record<string, ReactNode> = {
   system:      <Sparkles size={15} />,
   user:        <Users size={15} />,
   achievement: <Award size={15} />,
+  file_shared:     <Share2 size={15} />,
+  file_deleted:    <Trash2 size={15} />,
+  file_restored:   <FolderOpen size={15} />,
+  transfer_sent:   <ArrowLeftRight size={15} />,
+  file_uploaded:   <Upload size={15} />,
+  file_downloaded: <Download size={15} />,
+  folder_created:  <FolderPlus size={15} />,
+  link_created:    <Link2 size={15} />,
+  user_added:      <Users size={15} />,
+  alert:           <AlertTriangle size={15} />,
 };
 
 const NOTIF_ACCENT: Record<string, { icon: string; dot: string; bg: string }> = {
@@ -89,6 +103,16 @@ const NOTIF_ACCENT: Record<string, { icon: string; dot: string; bg: string }> = 
   download:    { icon: "bg-purple-100 text-purple-600 dark:bg-purple-900/30 dark:text-purple-400", dot: "bg-purple-500", bg: "border-l-2 border-l-purple-400" },
   system:      { icon: "bg-orange-100 text-orange-600 dark:bg-orange-900/30 dark:text-orange-400", dot: "bg-orange-500", bg: "border-l-2 border-l-orange-400" },
   achievement: { icon: "bg-amber-100 text-amber-600 dark:bg-amber-900/30 dark:text-amber-400",   dot: "bg-amber-500",  bg: "border-l-2 border-l-amber-400" },
+  file_shared:     { icon: "bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400",       dot: "bg-blue-500",   bg: "border-l-2 border-l-blue-400" },
+  file_deleted:    { icon: "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400",           dot: "bg-red-500",    bg: "border-l-2 border-l-red-400" },
+  file_restored:   { icon: "bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400", dot: "bg-emerald-500", bg: "border-l-2 border-l-emerald-400" },
+  transfer_sent:   { icon: "bg-sky-100 text-sky-600 dark:bg-sky-900/30 dark:text-sky-400",           dot: "bg-sky-500",    bg: "border-l-2 border-l-sky-400" },
+  file_uploaded:   { icon: "bg-green-100 text-green-600 dark:bg-green-900/30 dark:text-green-400",   dot: "bg-green-500",  bg: "border-l-2 border-l-green-400" },
+  file_downloaded: { icon: "bg-purple-100 text-purple-600 dark:bg-purple-900/30 dark:text-purple-400", dot: "bg-purple-500", bg: "border-l-2 border-l-purple-400" },
+  folder_created:  { icon: "bg-amber-100 text-amber-600 dark:bg-amber-900/30 dark:text-amber-400",   dot: "bg-amber-500",  bg: "border-l-2 border-l-amber-400" },
+  link_created:    { icon: "bg-violet-100 text-violet-600 dark:bg-violet-900/30 dark:text-violet-400", dot: "bg-violet-500", bg: "border-l-2 border-l-violet-400" },
+  user_added:      { icon: "bg-indigo-100 text-indigo-600 dark:bg-indigo-900/30 dark:text-indigo-400", dot: "bg-indigo-500", bg: "border-l-2 border-l-indigo-400" },
+  alert:           { icon: "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400",           dot: "bg-red-500",    bg: "border-l-2 border-l-red-400" },
   default:     { icon: "bg-gray-100 text-gray-500 dark:bg-zinc-800 dark:text-gray-400",          dot: "bg-gray-400",   bg: "border-l-2 border-l-gray-300 dark:border-l-zinc-600" },
 };
 
@@ -158,7 +182,16 @@ function getRouteContext(pathname: string, type: string | null): { title: string
     return { title: "Shared Links", subtitle: "Link-based shared access", icon: <Link2 size={15} /> };
   }
   if (pathname.startsWith("/transfers")) return { title: "Transfers", subtitle: "Send and receive files", icon: <ArrowLeftRight size={15} /> };
+  if (pathname === "/notifications") return { title: "Notifications", subtitle: "Alerts and activity updates", icon: <Bell size={15} /> };
+  if (pathname === "/shared") return { title: "Shared", subtitle: "Files shared with you", icon: <Share2 size={15} /> };
+  if (pathname === "/starred") return { title: "Starred", subtitle: "Pinned files and folders", icon: <Star size={15} /> };
+  if (pathname === "/trash") return { title: "Trash", subtitle: "Deleted items and recovery", icon: <Trash2 size={15} /> };
+  if (pathname === "/search") return { title: "Search", subtitle: "Find files and folders", icon: <Search size={15} /> };
+  if (pathname === "/profile") return { title: "Profile", subtitle: "Account details", icon: <User size={15} /> };
+  if (pathname === "/settings") return { title: "Settings", subtitle: "Preferences and security", icon: <Settings size={15} /> };
+  if (pathname === "/help") return { title: "Help", subtitle: "Support and guidance", icon: <HelpCircle size={15} /> };
   if (pathname.startsWith("/admin")) return { title: "Administration", subtitle: "Platform management", icon: <Settings size={15} /> };
+  if (pathname.startsWith("/superadmin/roles")) return { title: "Roles", subtitle: "Access model and permissions", icon: <UserCog size={15} /> };
   if (pathname.startsWith("/superadmin")) return { title: "System", subtitle: "Super admin controls", icon: <AlertTriangle size={15} /> };
   return { title: "Jai Export", subtitle: "File Transfer", icon: <Sparkles size={15} /> };
 }
@@ -242,6 +275,7 @@ export default function Header({
     if (!storageQuota || storageQuota <= 0) return 0;
     return Math.min((storageUsed / storageQuota) * 100, 100);
   }, [storageUsed, storageQuota]);
+  const hasStorageQuota = storageQuota > 0;
   const firstName = useMemo(
     () => (user?.name ?? user?.email ?? "User").split(/\s+/)[0],
     [user?.name, user?.email],
@@ -262,9 +296,8 @@ export default function Header({
   ========================= */
   const loadNotifications = useCallback(async () => {
     try {
-      const res = await notificationsApi.list();
-      const data = res.data?.data ?? res.data ?? [];
-      setNotifs(Array.isArray(data) ? data : []);
+      const res = await notificationsApi.list({ limit: 8 });
+      setNotifs(getNotificationsFromResponse(res.data));
     } catch { /* Silent */ }
   }, []);
 
@@ -558,14 +591,19 @@ export default function Header({
           </IconBtn>
 
           {/* Storage — desktop */}
-          <div className="hidden items-center gap-2 rounded-xl border border-gray-200/80 bg-white px-2.5 py-1.5 dark:border-zinc-800 dark:bg-zinc-900 lg:flex">
+          <div
+            className="hidden items-center gap-2 rounded-xl border border-gray-200/80 bg-white px-2.5 py-1.5 dark:border-zinc-800 dark:bg-zinc-900 lg:flex"
+            title={hasStorageQuota ? `${formatBytes(storageUsed)} of ${formatBytes(storageQuota)}` : `${formatBytes(storageUsed)} used`}
+          >
             <HardDrive size={14} className={storagePct >= 90 ? "text-red-500" : "text-orange-500"} />
             {storageLoading ? (
               <span className="h-3 w-16 animate-pulse rounded bg-gray-200 dark:bg-zinc-800" />
             ) : (
               <span className="text-[11px] font-semibold text-gray-600 dark:text-gray-300">
-                {storagePct.toFixed(0)}%
-                <span className="ml-1 font-normal text-gray-400">{formatBytes(storageUsed)}</span>
+                {hasStorageQuota ? `${storagePct.toFixed(0)}%` : formatBytes(storageUsed)}
+                <span className="ml-1 font-normal text-gray-400">
+                  {hasStorageQuota ? `${formatBytes(storageUsed)} / ${formatBytes(storageQuota)}` : "No quota"}
+                </span>
               </span>
             )}
           </div>

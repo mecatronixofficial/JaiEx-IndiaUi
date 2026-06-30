@@ -6,7 +6,7 @@ import { useParams, useRouter } from "next/navigation";
 import {
   Send, Eye, Download, Clock, CheckCircle, XCircle, Copy, Check,
   Lock, Unlock, RefreshCw, Trash2, ArrowLeft, Users, Globe, Shield,
-  FileText, Image, Video, Archive, Table2, File, ExternalLink,
+  FileText, Image as ImageIcon, Video, Archive, Table2, File, ExternalLink,
   Activity, MapPin, Monitor, Smartphone, ChevronDown, ChevronUp,
   ChevronRight, AlertTriangle, Mail, QrCode, Link as LinkIcon,
   ToggleLeft, ToggleRight, CloudUpload, Zap, TrendingUp, Folder, FolderOpen,
@@ -14,6 +14,13 @@ import {
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import AuthGuard from "@/components/auth/AuthGuard";
 import { formatBytes, formatRelative } from "@/lib/utils";
+import {
+  getTransferFileCount,
+  getTransferLink,
+  getTransferSenderEmail,
+  getTransferSenderLabel,
+  getTransferTotalSize,
+} from "@/lib/transfers";
 import { transfersApi } from "@/lib/api";
 import { showToast } from "@/lib/toast";
 import { Transfer, ViewerDetail, TransferActivity } from "@/types";
@@ -30,7 +37,7 @@ type FullTransfer = Transfer & {
 function FileIcon({ ext }: { ext: string }) {
   const e = ext.toLowerCase();
   if (["pdf"].includes(e))                                 return <FileText size={16} className="text-red-500" />;
-  if (["jpg","jpeg","png","gif","svg","webp"].includes(e)) return <Image    size={16} className="text-blue-500" />;
+  if (["jpg","jpeg","png","gif","svg","webp"].includes(e)) return <ImageIcon size={16} className="text-blue-500" />;
   if (["mp4","mov","avi","mkv"].includes(e))               return <Video    size={16} className="text-purple-500" />;
   if (["zip","tar","gz","rar","7z"].includes(e))           return <Archive  size={16} className="text-amber-500" />;
   if (["xls","xlsx","csv"].includes(e))                    return <Table2   size={16} className="text-green-500" />;
@@ -291,11 +298,7 @@ export default function TransferDetailsPage() {
     ? Math.ceil((new Date(transfer.expiresAt).getTime() - mountedAt) / 86_400_000)
     : null;
 
-  const shareLink = transfer
-    ? (transfer.link?.url ?? (transfer.link?.shortCode
-        ? `${window.location.origin}/t/${transfer.link.shortCode}`
-        : `${window.location.origin}/t/${transfer.id}`))
-    : "";
+  const shareLink = transfer ? getTransferLink(transfer) : "";
 
   const viewers        = transfer?.viewerDetails ?? [];
   const activities     = transfer?.activity ?? [];
@@ -303,6 +306,11 @@ export default function TransferDetailsPage() {
   const isExpired      = transfer
     ? (transfer.status === "expired" || (daysLeft !== null && daysLeft < 0))
     : false;
+  const isReceived = !!transfer?.isReceived;
+  const fileCount = transfer ? getTransferFileCount(transfer) : 0;
+  const totalSize = transfer ? getTransferTotalSize(transfer) : 0;
+  const senderName = transfer ? getTransferSenderLabel(transfer) : "";
+  const senderEmail = transfer ? getTransferSenderEmail(transfer) : undefined;
 
   /* ── Fetch transfer — no synchronous setState in the effect body ── */
   useEffect(() => {
@@ -372,9 +380,7 @@ export default function TransferDetailsPage() {
 
   const handleCopy = () => {
     if (!transfer) return;
-    const link = transfer.link?.url
-      ?? (transfer.link?.shortCode ? `${window.location.origin}/t/${transfer.link.shortCode}` : `${window.location.origin}/t/${transfer.id}`);
-    navigator.clipboard.writeText(link).catch(() => null);
+    navigator.clipboard?.writeText(shareLink).catch(() => showToast.error("Unable to copy link"));
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
     showToast.success("Link copied");
@@ -419,7 +425,7 @@ export default function TransferDetailsPage() {
   const STATS = [
     { label: "Total Views",  value: transfer.views ?? 0,             icon: <Eye size={16} />,      gradient: "from-purple-500 to-violet-500" },
     { label: "Downloads",    value: transfer.downloads ?? 0,         icon: <Download size={16} />, gradient: "from-blue-500 to-cyan-500" },
-    { label: "Recipients",   value: transfer.recipients?.length ?? 0, icon: <Users size={16} />,   gradient: "from-orange-500 to-amber-500" },
+    { label: isReceived ? "Sender" : "Recipients", value: isReceived ? senderName : transfer.recipients?.length ?? 0, icon: <Users size={16} />, gradient: "from-orange-500 to-amber-500" },
     {
       label: "Days Left",
       value: daysLeft === null ? "∞" : daysLeft > 0 ? `${daysLeft}d` : "Expired",
@@ -469,6 +475,14 @@ export default function TransferDetailsPage() {
                     <span className="flex items-center gap-1 text-[11px] text-(--text-muted)">
                       <Zap size={10} className="text-orange-500" /> Sent {formatRelative(transfer.createdAt)}
                     </span>
+                    {isReceived && (
+                      <>
+                        <span className="h-3 w-px bg-gray-200 dark:bg-zinc-700" />
+                        <span className="flex items-center gap-1 text-[11px] text-(--text-muted)">
+                          <Users size={10} className="text-blue-500" /> From {senderName}
+                        </span>
+                      </>
+                    )}
                     {transfer.hasPassword && (
                       <>
                         <span className="h-3 w-px bg-gray-200 dark:bg-zinc-700" />
@@ -489,7 +503,7 @@ export default function TransferDetailsPage() {
                   {copied ? "Copied!" : "Copy Link"}
                 </button>
 
-                {transfer.status === "active" && (
+                {!isReceived && transfer.status === "active" && (
                   <button type="button" onClick={() => handleExtend(7)}
                     disabled={actionLoading === "extend"}
                     className="flex items-center gap-1.5 rounded-xl border border-gray-200/80 bg-white/80 px-3 py-2 text-xs font-semibold text-(--text-muted) shadow-sm backdrop-blur-sm transition-colors hover:text-(--text) disabled:opacity-50 dark:border-zinc-700/60 dark:bg-zinc-900/80">
@@ -498,7 +512,7 @@ export default function TransferDetailsPage() {
                   </button>
                 )}
 
-                {transfer.status === "active" && (
+                {!isReceived && transfer.status === "active" && (
                   <button type="button" onClick={handleDisable}
                     disabled={actionLoading === "disable"}
                     className="flex items-center gap-1.5 rounded-xl border border-orange-100 bg-orange-50 px-3 py-2 text-xs font-semibold text-orange-600 transition-colors hover:bg-orange-100 disabled:opacity-50 dark:border-orange-900/30 dark:bg-orange-900/10 dark:text-orange-400">
@@ -507,7 +521,7 @@ export default function TransferDetailsPage() {
                   </button>
                 )}
 
-                {transfer.status === "disabled" && (
+                {!isReceived && transfer.status === "disabled" && (
                   <button type="button" onClick={handleEnable}
                     disabled={actionLoading === "enable"}
                     className="flex items-center gap-1.5 rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-600 transition-colors hover:bg-emerald-100 disabled:opacity-50 dark:border-emerald-900/30 dark:bg-emerald-900/10 dark:text-emerald-400">
@@ -516,18 +530,20 @@ export default function TransferDetailsPage() {
                   </button>
                 )}
 
-                <button type="button" onClick={handleDelete}
-                  disabled={actionLoading === "delete"}
-                  className="flex items-center gap-1.5 rounded-xl border border-red-100 bg-red-50 px-3 py-2 text-xs font-semibold text-red-600 transition-colors hover:bg-red-100 disabled:opacity-50 dark:border-red-900/30 dark:bg-red-900/10 dark:text-red-400">
-                  <Trash2 size={12} />
-                  {actionLoading === "delete" ? "Deleting…" : "Delete"}
-                </button>
+                {!isReceived && (
+                  <button type="button" onClick={handleDelete}
+                    disabled={actionLoading === "delete"}
+                    className="flex items-center gap-1.5 rounded-xl border border-red-100 bg-red-50 px-3 py-2 text-xs font-semibold text-red-600 transition-colors hover:bg-red-100 disabled:opacity-50 dark:border-red-900/30 dark:bg-red-900/10 dark:text-red-400">
+                    <Trash2 size={12} />
+                    {actionLoading === "delete" ? "Deleting…" : "Delete"}
+                  </button>
+                )}
               </div>
             </div>
           </div>
 
           {/* ── Expiry warning ── */}
-          {daysLeft !== null && daysLeft >= 0 && daysLeft <= 2 && transfer.status === "active" && (
+          {!isReceived && daysLeft !== null && daysLeft >= 0 && daysLeft <= 2 && transfer.status === "active" && (
             <div className="flex items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 dark:border-amber-800/40 dark:bg-amber-900/10">
               <AlertTriangle size={14} className="shrink-0 text-amber-600 dark:text-amber-400" />
               <p className="flex-1 text-sm font-medium text-amber-800 dark:text-amber-300">
@@ -574,9 +590,9 @@ export default function TransferDetailsPage() {
                       <div>
                         <h2 className="font-bold text-(--text)">Files</h2>
                         <p className="text-xs text-(--text-muted)">
-                          {transfer.fileCount} file{transfer.fileCount !== 1 ? "s" : ""}
+                          {fileCount} file{fileCount !== 1 ? "s" : ""}
                           {hasFolders && ` in ${folders.length} folder${folders.length !== 1 ? "s" : ""}`}
-                          {" · "}{formatBytes(transfer.totalSize)}
+                          {" · "}{formatBytes(totalSize)}
                         </p>
                       </div>
                       <div className="flex items-center gap-2">
@@ -586,7 +602,7 @@ export default function TransferDetailsPage() {
                           </span>
                         )}
                         <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-orange-50 text-xs font-bold text-orange-600 dark:bg-orange-900/20 dark:text-orange-400">
-                          {transfer.fileCount}
+                          {fileCount}
                         </span>
                       </div>
                     </div>
@@ -605,7 +621,7 @@ export default function TransferDetailsPage() {
 
                     {/* Footer */}
                     <div className="flex items-center justify-between border-t border-gray-100 px-5 py-3 dark:border-zinc-800">
-                      <span className="text-xs text-(--text-muted)">{formatBytes(transfer.totalSize)} total</span>
+                      <span className="text-xs text-(--text-muted)">{formatBytes(totalSize)} total</span>
                       <a href={shareLink} target="_blank" rel="noopener noreferrer"
                         className="flex items-center gap-1.5 text-xs font-semibold text-orange-500 transition-colors hover:text-orange-600">
                         <ExternalLink size={11} /> Open Transfer Page
@@ -774,13 +790,13 @@ export default function TransferDetailsPage() {
                     </div>
                   </div>
 
-                  {transfer.status === "active" && (
+                  {!isReceived && transfer.status === "active" && (
                     <button type="button" onClick={handleDisable} disabled={actionLoading === "disable"}
                       className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-red-100 py-2.5 text-xs font-semibold text-red-500 transition-colors hover:bg-red-50 disabled:opacity-50 dark:border-red-900/20 dark:hover:bg-red-900/10">
                       <ToggleLeft size={12} /> Disable Link
                     </button>
                   )}
-                  {transfer.status === "disabled" && (
+                  {!isReceived && transfer.status === "disabled" && (
                     <button type="button" onClick={handleEnable} disabled={actionLoading === "enable"}
                       className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-emerald-100 py-2.5 text-xs font-semibold text-emerald-600 transition-colors hover:bg-emerald-50 disabled:opacity-50 dark:border-emerald-900/20 dark:hover:bg-emerald-900/10">
                       <ToggleRight size={12} /> Re-enable Link
@@ -802,7 +818,7 @@ export default function TransferDetailsPage() {
                       ? <span className="flex items-center gap-1 text-orange-500"><Lock size={10} /> Protected</span>
                       : <span className="flex items-center gap-1 text-(--text-muted)"><Unlock size={10} /> None</span>
                   } />
-                  <InfoRow label="Files"     value={`${transfer.fileCount} · ${formatBytes(transfer.totalSize)}`} />
+                  <InfoRow label="Files"     value={`${fileCount} · ${formatBytes(totalSize)}`} />
                   <InfoRow label="Created"   value={formatRelative(transfer.createdAt)} />
                   <InfoRow label="Expires"   value={
                     transfer.expiresAt
@@ -816,18 +832,30 @@ export default function TransferDetailsPage() {
                 </div>
               </SectionCard>
 
-              {/* Recipients */}
+              {/* Sender / Recipients */}
               <SectionCard>
                 <div className="border-b border-gray-100 px-5 py-4 dark:border-zinc-800">
                   <div className="flex items-center justify-between">
-                    <h3 className="font-bold text-(--text)">Recipients</h3>
+                    <h3 className="font-bold text-(--text)">{isReceived ? "Sender" : "Recipients"}</h3>
                     <span className="rounded-full bg-orange-50 px-2 py-0.5 text-xs font-bold text-orange-600 dark:bg-orange-900/20 dark:text-orange-400">
-                      {transfer.recipients?.length ?? 0}
+                      {isReceived ? "1" : transfer.recipients?.length ?? 0}
                     </span>
                   </div>
                 </div>
                 <div className="p-5">
-                  {!transfer.recipients?.length ? (
+                  {isReceived ? (
+                    <div className="flex items-center gap-3 rounded-xl bg-blue-50/80 px-3 py-2.5 dark:bg-blue-900/10">
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-100 text-xs font-bold text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">
+                        {senderName[0]?.toUpperCase() ?? "?"}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="truncate text-xs font-semibold text-(--text)">{senderName}</p>
+                        {senderEmail && senderEmail !== senderName && (
+                          <p className="truncate text-[10px] text-(--text-muted)">{senderEmail}</p>
+                        )}
+                      </div>
+                    </div>
+                  ) : !transfer.recipients?.length ? (
                     <p className="text-xs text-(--text-muted)">No specific recipients — shared via link</p>
                   ) : (
                     <div className="space-y-2">
@@ -867,20 +895,22 @@ export default function TransferDetailsPage() {
               )}
 
               {/* Danger zone */}
-              <SectionCard>
-                <div className="border-b border-gray-100 px-5 py-4 dark:border-zinc-800">
-                  <h3 className="font-bold text-red-500">Danger Zone</h3>
-                </div>
-                <div className="p-5">
-                  <button type="button" onClick={handleDelete}
-                    disabled={actionLoading === "delete"}
-                    className="flex w-full items-center justify-center gap-2 rounded-xl border border-red-200 bg-red-50 py-2.5 text-sm font-semibold text-red-600 transition-colors hover:bg-red-100 disabled:opacity-50 dark:border-red-900/30 dark:bg-red-900/10 dark:text-red-400 dark:hover:bg-red-900/20">
-                    <Trash2 size={13} />
-                    {actionLoading === "delete" ? "Deleting…" : "Delete Transfer"}
-                  </button>
-                  <p className="mt-2 text-center text-[10px] text-(--text-muted)">This action cannot be undone.</p>
-                </div>
-              </SectionCard>
+              {!isReceived && (
+                <SectionCard>
+                  <div className="border-b border-gray-100 px-5 py-4 dark:border-zinc-800">
+                    <h3 className="font-bold text-red-500">Danger Zone</h3>
+                  </div>
+                  <div className="p-5">
+                    <button type="button" onClick={handleDelete}
+                      disabled={actionLoading === "delete"}
+                      className="flex w-full items-center justify-center gap-2 rounded-xl border border-red-200 bg-red-50 py-2.5 text-sm font-semibold text-red-600 transition-colors hover:bg-red-100 disabled:opacity-50 dark:border-red-900/30 dark:bg-red-900/10 dark:text-red-400 dark:hover:bg-red-900/20">
+                      <Trash2 size={13} />
+                      {actionLoading === "delete" ? "Deleting…" : "Delete Transfer"}
+                    </button>
+                    <p className="mt-2 text-center text-[10px] text-(--text-muted)">This action cannot be undone.</p>
+                  </div>
+                </SectionCard>
+              )}
 
             </div>
           </div>

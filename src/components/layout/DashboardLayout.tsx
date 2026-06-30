@@ -14,6 +14,7 @@ import Header from "./Header";
 import { usersApi } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 import UploadModal from "@/components/modals/UploadModal";
+import { readStorageUsage } from "@/lib/storage";
 
 /* =========================
    STORAGE CONTEXT
@@ -77,12 +78,14 @@ export default function DashboardLayout({
 
     async function fetchStorage() {
       try {
-        const res = await usersApi.getStorage(user!.id);
+        const res = await usersApi.myStorage();
         if (!alive) return;
-        // Backend returns { success, data: { usedBytes, quotaBytes } }
-        const s = res.data?.data ?? res.data;
-        setStorageUsed(s?.usedBytes ?? s?.used ?? 0);
-        setStorageQuota(s?.quotaBytes ?? s?.quota ?? DEFAULT_QUOTA);
+        const storage = readStorageUsage(res.data, {
+          used: readStorageUsage(user).used,
+          quota: readStorageUsage(user).quota || DEFAULT_QUOTA,
+        });
+        setStorageUsed(storage.used);
+        setStorageQuota(storage.quota);
       } catch {
         // silent — layout should never crash over storage
       } finally {

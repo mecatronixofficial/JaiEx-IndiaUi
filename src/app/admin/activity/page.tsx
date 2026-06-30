@@ -296,7 +296,9 @@ export default function AdminActivityPage() {
     try {
       if (silent) setRefreshing(true);
       else setLoading(true);
-      const res = await adminApi.activity({ limit: 100 });
+      const res = isAuditLogs
+        ? await adminApi.auditLogs({ limit: 100 })
+        : await adminApi.activity({ limit: 100 });
       const inner = res.data?.data ?? res.data;
       const list = inner?.activities ?? inner?.activity ?? inner?.events ?? inner?.items ?? inner ?? [];
       setLogs((Array.isArray(list) ? list : []).map(normalizeAuditEvent));
@@ -306,7 +308,7 @@ export default function AdminActivityPage() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [isAuditLogs]);
 
   useEffect(() => {
     void Promise.resolve().then(() => load());
@@ -752,7 +754,7 @@ export default function AdminActivityPage() {
           {!loading && logs.length > 0 && (
             <p className="flex items-center gap-1.5 text-xs text-(--text-muted)">
               <AlertTriangle size={12} />
-              Backend activity currently returns the most recent {logs.length} events. Filters are applied to that returned audit window.
+              Backend {isAuditLogs ? "audit logs" : "activity"} currently returns the most recent {logs.length} events. Filters are applied to that returned window.
             </p>
           )}
         </div>
