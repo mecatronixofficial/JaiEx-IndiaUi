@@ -258,7 +258,6 @@ export default function FoldersPage() {
     doLoad();
     return () => { mounted = false; };
   }, [authLoading, currentFolder, tick, visibleFiles, visibleFolders]);
-@
   /* ── Navigation ── */
   function navigateTo(folder: Folder | null) {
     setSearch("");
