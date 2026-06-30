@@ -7,24 +7,49 @@ import {
   Copy, Check, Search, MoreHorizontal, Trash2, RefreshCw, Shield,
   Globe, Users, Lock, ExternalLink, ArrowUpDown, AlertTriangle,
   X as XIcon, Crown, User as UserIcon, FolderOpen, QrCode, Mail,
-  CalendarDays, Download, Eye, KeyRound,
+  CalendarDays, Download, Eye, KeyRound, Plus, FileText, MessageCircle,
+  Smartphone, Upload,
 } from "lucide-react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import AuthGuard from "@/components/auth/AuthGuard";
 import { EmptyState } from "@/components/ui";
-import { linksApi } from "@/lib/api";
-import { SharedLink } from "@/types";
+import { filesApi, foldersApi, linksApi } from "@/lib/api";
+import { FileItem, Folder, SharedLink } from "@/types";
 import { formatBytes, formatDateTime, formatRelative } from "@/lib/utils";
 import { handleApiError } from "@/lib/error-handler";
 import { showToast } from "@/lib/toast";
 import { useAuth } from "@/contexts/AuthContext";
+import UploadModal from "@/components/modals/UploadModal";
+import { getLinksFromResponse } from "@/lib/transfers";
 
 /* ─── Types ─── */
 type StatusFilter = "all" | "active" | "expired" | "disabled";
 type ShareMethod = "link" | "qr" | "email";
 type SortKey = "createdAt" | "views" | "downloads" | "expiresAt";
 type SortDir  = "asc" | "desc";
+type ResourceType = "file" | "folder";
+type DeliveryAction = "copy" | "email" | "whatsapp" | "sms";
+type LinkAccessEvent = {
+  id: string;
+  action: "view" | "download";
+  method: ShareMethod;
+  ip: string;
+  email?: string | null;
+  userId?: string | null;
+  userAgent?: string | null;
+  browser?: string | null;
+  os?: string | null;
+  device?: string | null;
+  location?: string | null;
+  fileId?: string | null;
+  fileName?: string | null;
+  createdAt: string;
+};
+type LinkAccessData = {
+  accesses: LinkAccessEvent[];
+  summary?: { views?: number; downloads?: number; uniqueVisitors?: number };
+};
 type MethodAwareSharedLink = SharedLink & {
   method?: string;
   shareMethod?: string;
@@ -33,6 +58,16 @@ type MethodAwareSharedLink = SharedLink & {
   shareType?: string;
   transfer?: { method?: string };
   share?: { type?: string };
+};
+
+type CreateLinkForm = {
+  resourceType: ResourceType;
+  resourceId: string;
+  method: ShareMethod;
+  permission: "view" | "download";
+  expiresIn: number;
+  password: string;
+  recipients: string;
 };
 
 const METHOD_CONFIG: Record<ShareMethod, { title: string; description: string; label: string; icon: React.ReactNode }> = {
@@ -91,6 +126,27 @@ function methodIcon(method: ShareMethod, size = 12) {
   if (method === "qr") return <QrCode size={size} />;
   if (method === "email") return <Mail size={size} />;
   return <LinkIcon size={size} />;
+}
+
+function shareText(url: string) {
+  return `Here is the secure Jai Export share link: ${url}`;
+}
+
+function deliveryHref(action: Exclude<DeliveryAction, "copy">, url: string) {
+  const text = shareText(url);
+  if (action === "email") {
+    return `mailto:?subject=${encodeURIComponent("Secure file share")}&body=${encodeURIComponent(text)}`;
+  }
+  if (action === "whatsapp") {
+    return `https://wa.me/?text=${encodeURIComponent(text)}`;
+  }
+  return `sms:?&body=${encodeURIComponent(text)}`;
+}
+
+function resourceName(item: FileItem | Folder) {
+  return "mimeType" in item
+    ? item.name || item.originalName || "Untitled file"
+    : item.name || "Untitled folder";
 }
 
 function MethodBadge({ method }: { method: ShareMethod }) {
@@ -241,7 +297,6 @@ function ConfirmDialog({
 ═══════════════════════════ */
 export default function LinksPage() {
   const { user } = useAuth();
-  const router   = useRouter();
   const searchParams = useSearchParams();
   const methodFilter = parseShareMethod(searchParams.get("type"));
   const methodConfig = METHOD_CONFIG[methodFilter];
@@ -260,31 +315,55 @@ export default function LinksPage() {
   const [sortKey, setSortKey]   = useState<SortKey>("createdAt");
   const [sortDir, setSortDir]   = useState<SortDir>("desc");
   const [confirmDelete, setConfirmDelete] = useState<SharedLink | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
+  const [showUpload, setShowUpload] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [files, setFiles] = useState<FileItem[]>([]);
+  const [folders, setFolders] = useState<Folder[]>([]);
+  const [createdLink, setCreatedLink] = useState<SharedLink | null>(null);
+  const [accessLink, setAccessLink] = useState<SharedLink | null>(null);
+  const [accessData, setAccessData] = useState<LinkAccessData | null>(null);
+  const [accessLoading, setAccessLoading] = useState(false);
+  const [form, setForm] = useState<CreateLinkForm>({
+    resourceType: "file",
+    resourceId: "",
+    method: methodFilter,
+    permission: "download",
+    expiresIn: 7,
+    password: "",
+    recipients: "",
+  });
 
-  /* Redirect non-admins */
-  useEffect(() => {
-    if (!user) return;
-    if (!isAdmin) router.replace("/dashboard");
-  }, [user, isAdmin, router]);
-
-  /* ── Load all links (admin endpoint) ── */
+  /* ── Load links ── */
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await linksApi.adminList();
-      const data = res.data?.data?.links ?? res.data?.links ?? [];
-      setLinks(Array.isArray(data) ? data : []);
+      const res = isAdmin ? await linksApi.adminList() : await linksApi.list();
+      setLinks(getLinksFromResponse(res.data));
     } catch (err) {
       handleApiError(err);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [isAdmin]);
 
   useEffect(() => {
-    if (!isAdmin) return;
     void Promise.resolve().then(load);
-  }, [load, isAdmin]);
+  }, [load]);
+
+  useEffect(() => {
+    if (!showCreate) return;
+    Promise.all([filesApi.list({ limit: 100 }), foldersApi.list({ limit: 100 })])
+      .then(([fileRes, folderRes]) => {
+        const fileData = fileRes.data?.data ?? fileRes.data;
+        const folderData = folderRes.data?.data ?? folderRes.data;
+        const nextFiles = fileData?.files ?? (Array.isArray(fileData) ? fileData : []);
+        const nextFolders = folderData?.folders ?? (Array.isArray(folderData) ? folderData : []);
+        setFiles(Array.isArray(nextFiles) ? nextFiles : []);
+        setFolders(Array.isArray(nextFolders) ? nextFolders : []);
+      })
+      .catch(handleApiError);
+  }, [showCreate]);
 
   /* Close dropdown on outside click */
   useEffect(() => {
@@ -372,7 +451,8 @@ export default function LinksPage() {
     const prev = links.slice();
     setLinks((ls) => ls.map((l) => l.id === link.id ? { ...l, status: "disabled" as const } : l));
     try {
-      await linksApi.adminDisable(link.id);
+      if (isAdmin) await linksApi.adminDisable(link.id);
+      else await linksApi.disable(link.id);
       showToast.success("Link disabled");
     } catch (err) { setLinks(prev); handleApiError(err); }
     finally { setActing(null); }
@@ -383,7 +463,8 @@ export default function LinksPage() {
     const prev = links.slice();
     setLinks((ls) => ls.map((l) => l.id === link.id ? { ...l, status: "active" as const } : l));
     try {
-      await linksApi.adminEnable(link.id);
+      if (isAdmin) await linksApi.adminEnable(link.id);
+      else await linksApi.enable(link.id);
       showToast.success("Link enabled");
     } catch (err) { setLinks(prev); handleApiError(err); }
     finally { setActing(null); }
@@ -394,7 +475,8 @@ export default function LinksPage() {
     const prev = links.slice();
     setLinks((ls) => ls.filter((l) => l.id !== link.id));
     try {
-      await linksApi.adminDelete(link.id);
+      if (isAdmin) await linksApi.adminDelete(link.id);
+      else await linksApi.delete(link.id);
       showToast.success("Link deleted");
     } catch (err) { setLinks(prev); handleApiError(err); }
   }
@@ -402,16 +484,61 @@ export default function LinksPage() {
   async function handleRenew(id: string) {
     setMenuOpen(null);
     try {
-      await linksApi.adminRenew(id, 7);
+      if (isAdmin) await linksApi.adminRenew(id, 7);
+      else await linksApi.renew(id, 7);
       showToast.success("Link extended by 7 days");
       load();
     } catch (err) { handleApiError(err); }
   }
 
-  const sortProps = { activeSortKey: sortKey, onSort: toggleSort };
+  async function handleCreateLink() {
+    if (!form.resourceId) {
+      showToast.error(`Choose a ${form.resourceType} first`);
+      return;
+    }
+    setCreating(true);
+    try {
+      const recipients = form.recipients
+        .split(/[,\s]+/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+      const res = await linksApi.create({
+        resourceType: form.resourceType,
+        resourceId: form.resourceId,
+        method: form.method,
+        permission: form.permission,
+        expiresIn: form.expiresIn,
+        ...(form.password.trim() ? { password: form.password.trim() } : {}),
+        ...(recipients.length ? { recipients, privacy: "specific" } : {}),
+      });
+      const link = res.data?.data ?? res.data;
+      setCreatedLink(link);
+      setShowCreate(false);
+      setForm((prev) => ({ ...prev, resourceId: "", password: "", recipients: "" }));
+      showToast.success("Share link generated");
+      load();
+    } catch (err) {
+      handleApiError(err);
+    } finally {
+      setCreating(false);
+    }
+  }
 
-  /* Block render for non-admins while redirect is in flight */
-  if (!isAdmin) return null;
+  async function openAccessDetails(link: SharedLink) {
+    setMenuOpen(null);
+    setAccessLink(link);
+    setAccessLoading(true);
+    try {
+      const res = await linksApi.accesses(link.id, { limit: 100 });
+      setAccessData(res.data?.data ?? res.data);
+    } catch (err) {
+      handleApiError(err);
+    } finally {
+      setAccessLoading(false);
+    }
+  }
+
+  const sortProps = { activeSortKey: sortKey, onSort: toggleSort };
 
   return (
     <AuthGuard>
@@ -430,18 +557,31 @@ export default function LinksPage() {
                     ? "bg-red-50 text-red-600 ring-1 ring-red-200 dark:bg-red-950/30 dark:text-red-400 dark:ring-red-800/40"
                     : "bg-orange-50 text-orange-600 ring-1 ring-orange-200 dark:bg-orange-950/30 dark:text-orange-400 dark:ring-orange-800/40"
                 }`}>
-                  {isSuperAdmin ? <Shield size={9} /> : <Crown size={9} />}
-                  {isSuperAdmin ? "Super Admin" : "Admin"}
+                  {isSuperAdmin ? <Shield size={9} /> : isAdmin ? <Crown size={9} /> : <UserIcon size={9} />}
+                  {isSuperAdmin ? "Super Admin" : isAdmin ? "Admin" : "My Links"}
                 </span>
               </div>
               <p className="mt-0.5 text-sm text-gray-500 dark:text-gray-400">
-                {methodConfig.description}
+                {isAdmin ? methodConfig.description : "Create and manage links for your uploaded files and folders"}
               </p>
             </div>
-            <button type="button" onClick={load} disabled={loading} aria-label="Refresh links"
-              className="flex items-center gap-1.5 self-start rounded-xl border border-gray-200 bg-white px-3.5 py-2 text-xs font-semibold text-gray-600 transition-colors hover:text-orange-500 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-gray-300">
-              <RefreshCw size={12} className={loading ? "animate-spin" : ""} /> Refresh
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button type="button" onClick={() => setShowUpload(true)}
+                className="flex items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3.5 py-2 text-xs font-semibold text-gray-600 transition-colors hover:text-orange-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-gray-300">
+                <Upload size={12} /> Upload and link
+              </button>
+              <button type="button" onClick={() => {
+                setForm((prev) => ({ ...prev, method: methodFilter }));
+                setShowCreate(true);
+              }}
+                className="flex items-center gap-1.5 rounded-xl bg-orange-500 px-3.5 py-2 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-orange-600">
+                <Plus size={12} /> Generate link
+              </button>
+              <button type="button" onClick={load} disabled={loading} aria-label="Refresh links"
+                className="flex items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3.5 py-2 text-xs font-semibold text-gray-600 transition-colors hover:text-orange-500 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-gray-300">
+                <RefreshCw size={12} className={loading ? "animate-spin" : ""} /> Refresh
+              </button>
+            </div>
           </div>
 
           {/* ── Stats ── */}
@@ -520,6 +660,40 @@ export default function LinksPage() {
               ))}
             </div>
           </div>
+
+          {createdLink && (
+            <div className="rounded-2xl border border-emerald-200/70 bg-emerald-50/70 p-4 dark:border-emerald-800/40 dark:bg-emerald-950/20">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div className="min-w-0">
+                  <div className="mb-1 flex items-center gap-2 text-sm font-bold text-emerald-700 dark:text-emerald-400">
+                    <CheckCircle size={15} />
+                    Link generated
+                  </div>
+                  <p className="truncate font-mono text-xs text-emerald-800 dark:text-emerald-300">
+                    {createdLink.url}
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button type="button" onClick={() => handleCopy(createdLink.id, createdLink.url)}
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-gray-700 ring-1 ring-emerald-200 transition hover:text-orange-600 dark:bg-zinc-900 dark:text-gray-200 dark:ring-emerald-800/40">
+                    <Copy size={12} /> Copy
+                  </button>
+                  <a href={deliveryHref("email", createdLink.url)}
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-gray-700 ring-1 ring-emerald-200 transition hover:text-blue-600 dark:bg-zinc-900 dark:text-gray-200 dark:ring-emerald-800/40">
+                    <Mail size={12} /> Email
+                  </a>
+                  <a href={deliveryHref("whatsapp", createdLink.url)} target="_blank" rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-gray-700 ring-1 ring-emerald-200 transition hover:text-emerald-600 dark:bg-zinc-900 dark:text-gray-200 dark:ring-emerald-800/40">
+                    <MessageCircle size={12} /> WhatsApp
+                  </a>
+                  <a href={deliveryHref("sms", createdLink.url)}
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-gray-700 ring-1 ring-emerald-200 transition hover:text-purple-600 dark:bg-zinc-900 dark:text-gray-200 dark:ring-emerald-800/40">
+                    <Smartphone size={12} /> Message
+                  </a>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* ── Filters ── */}
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -748,10 +922,29 @@ export default function LinksPage() {
                                         className="flex w-full items-center gap-2.5 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-zinc-800">
                                         <Copy size={13} /> Copy Link
                                       </button>
+                                      <button type="button" onClick={() => openAccessDetails(l)}
+                                        className="flex w-full items-center gap-2.5 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-zinc-800">
+                                        <Eye size={13} /> View Details
+                                      </button>
                                       <a href={l.url} target="_blank" rel="noopener noreferrer"
                                         className="flex w-full items-center gap-2.5 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-zinc-800"
                                         onClick={() => setMenuOpen(null)}>
                                         <ExternalLink size={13} /> Open Link
+                                      </a>
+                                      <a href={deliveryHref("email", l.url)}
+                                        className="flex w-full items-center gap-2.5 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-zinc-800"
+                                        onClick={() => setMenuOpen(null)}>
+                                        <Mail size={13} /> Send Email
+                                      </a>
+                                      <a href={deliveryHref("whatsapp", l.url)} target="_blank" rel="noopener noreferrer"
+                                        className="flex w-full items-center gap-2.5 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-zinc-800"
+                                        onClick={() => setMenuOpen(null)}>
+                                        <MessageCircle size={13} /> WhatsApp
+                                      </a>
+                                      <a href={deliveryHref("sms", l.url)}
+                                        className="flex w-full items-center gap-2.5 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-zinc-800"
+                                        onClick={() => setMenuOpen(null)}>
+                                        <Smartphone size={13} /> Message
                                       </a>
                                       {l.type === "share" && (
                                         <a href={`/l/${l.shortCode}`} target="_blank" rel="noopener noreferrer"
@@ -823,6 +1016,250 @@ export default function LinksPage() {
           confirmLabel="Delete Link"
           onConfirm={() => confirmDelete && handleDelete(confirmDelete)}
           onCancel={() => setConfirmDelete(null)}
+        />
+
+        {accessLink && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center px-4" role="dialog" aria-modal="true">
+            <div className="absolute inset-0 bg-black/55 backdrop-blur-sm" onClick={() => setAccessLink(null)} aria-hidden="true" />
+            <div className="relative z-10 flex max-h-[86vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-zinc-800 dark:bg-zinc-900">
+              <div className="flex items-center justify-between gap-3 border-b border-gray-100 p-5 dark:border-zinc-800">
+                <div className="min-w-0">
+                  <h2 className="text-lg font-bold text-gray-900 dark:text-white">Viewer and download details</h2>
+                  <p className="truncate font-mono text-xs text-gray-500">{accessLink.url}</p>
+                </div>
+                <button type="button" onClick={() => setAccessLink(null)}
+                  className="flex h-8 w-8 items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-zinc-800">
+                  <XIcon size={15} />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3 border-b border-gray-100 p-5 dark:border-zinc-800">
+                {[
+                  { label: "Views", value: accessData?.summary?.views ?? accessLink.views, icon: <Eye size={14} />, color: "text-blue-500" },
+                  { label: "Downloads", value: accessData?.summary?.downloads ?? accessLink.downloads, icon: <Download size={14} />, color: "text-orange-500" },
+                  { label: "Unique visitors", value: accessData?.summary?.uniqueVisitors ?? 0, icon: <Users size={14} />, color: "text-emerald-500" },
+                ].map((item) => (
+                  <div key={item.label} className="rounded-xl border border-gray-200/70 bg-gray-50 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-950/60">
+                    <div className={`mb-1 flex items-center gap-1.5 text-xs font-semibold ${item.color}`}>
+                      {item.icon}{item.label}
+                    </div>
+                    <p className="text-xl font-bold tabular-nums text-gray-900 dark:text-white">{item.value}</p>
+                  </div>
+                ))}
+              </div>
+
+              <div className="overflow-auto p-5">
+                {accessLoading ? (
+                  <div className="flex min-h-48 items-center justify-center">
+                    <RefreshCw size={22} className="animate-spin text-orange-500" />
+                  </div>
+                ) : !accessData?.accesses?.length ? (
+                  <EmptyState
+                    icon={<Eye size={34} />}
+                    title="No visitor details yet"
+                    description="Views and downloads will appear here after someone opens this link."
+                  />
+                ) : (
+                  <div className="overflow-hidden rounded-xl border border-gray-200 dark:border-zinc-800">
+                    <table className="w-full text-sm">
+                      <thead className="bg-gray-50 text-xs uppercase text-gray-500 dark:bg-zinc-950/60">
+                        <tr>
+                          <th className="px-4 py-3 text-left">Action</th>
+                          <th className="px-4 py-3 text-left">Person / IP</th>
+                          <th className="px-4 py-3 text-left">Device</th>
+                          <th className="px-4 py-3 text-left">Browser / OS</th>
+                          <th className="px-4 py-3 text-left">Location</th>
+                          <th className="px-4 py-3 text-left">File</th>
+                          <th className="px-4 py-3 text-left">Time</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100 dark:divide-zinc-800">
+                        {accessData.accesses.map((event) => (
+                          <tr key={event.id} className="hover:bg-orange-50/30 dark:hover:bg-orange-500/5">
+                            <td className="px-4 py-3">
+                              <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold capitalize ${
+                                event.action === "download"
+                                  ? "bg-orange-50 text-orange-600 ring-1 ring-orange-200 dark:bg-orange-950/20 dark:text-orange-400 dark:ring-orange-800/40"
+                                  : "bg-blue-50 text-blue-600 ring-1 ring-blue-200 dark:bg-blue-950/20 dark:text-blue-400 dark:ring-blue-800/40"
+                              }`}>
+                                {event.action === "download" ? <Download size={11} /> : <Eye size={11} />}
+                                {event.action}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3">
+                              <p className="text-xs font-semibold text-gray-800 dark:text-gray-200">
+                                {event.email ?? event.userId ?? "Anonymous visitor"}
+                              </p>
+                              <p className="font-mono text-[11px] text-gray-400">{event.ip}</p>
+                            </td>
+                            <td className="px-4 py-3 text-xs text-gray-600 dark:text-gray-300">{event.device ?? "Unknown"}</td>
+                            <td className="px-4 py-3">
+                              <p className="text-xs text-gray-700 dark:text-gray-200">{event.browser ?? "Unknown"}</p>
+                              <p className="text-[11px] text-gray-400">{event.os ?? "Unknown"}</p>
+                            </td>
+                            <td className="px-4 py-3 text-xs text-gray-600 dark:text-gray-300">{event.location ?? "Unknown"}</td>
+                            <td className="px-4 py-3 text-xs text-gray-600 dark:text-gray-300">{event.fileName ?? "-"}</td>
+                            <td className="px-4 py-3 text-xs text-gray-500">{formatDateTime(event.createdAt)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {showCreate && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center px-4" role="dialog" aria-modal="true">
+            <div className="absolute inset-0 bg-black/55 backdrop-blur-sm" onClick={() => setShowCreate(false)} aria-hidden="true" />
+            <div className="relative z-10 w-full max-w-2xl overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-zinc-800 dark:bg-zinc-900">
+              <div className="h-1 bg-linear-to-r from-orange-500 to-amber-500" />
+              <div className="p-5">
+                <div className="mb-5 flex items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-lg font-bold text-gray-900 dark:text-white">Generate share link</h2>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">Choose one uploaded file or folder and create a secure link.</p>
+                  </div>
+                  <button type="button" onClick={() => setShowCreate(false)}
+                    className="flex h-8 w-8 items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-zinc-800">
+                    <XIcon size={15} />
+                  </button>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 gap-2">
+                      {(["file", "folder"] as ResourceType[]).map((type) => (
+                        <button key={type} type="button"
+                          onClick={() => setForm((prev) => ({ ...prev, resourceType: type, resourceId: "" }))}
+                          className={`flex items-center justify-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold capitalize transition ${
+                            form.resourceType === type
+                              ? "border-orange-300 bg-orange-50 text-orange-600 dark:border-orange-800/60 dark:bg-orange-950/20"
+                              : "border-gray-200 text-gray-600 hover:border-orange-200 dark:border-zinc-700 dark:text-gray-300"
+                          }`}>
+                          {type === "file" ? <FileText size={14} /> : <FolderOpen size={14} />}
+                          {type}
+                        </button>
+                      ))}
+                    </div>
+
+                    <label className="block">
+                      <span className="mb-1.5 block text-xs font-semibold text-gray-600 dark:text-gray-300">
+                        Select {form.resourceType}
+                      </span>
+                      <select value={form.resourceId}
+                        onChange={(e) => setForm((prev) => ({ ...prev, resourceId: e.target.value }))}
+                        className="h-10 w-full rounded-xl border border-gray-200 bg-white px-3 text-sm outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-500/15 dark:border-zinc-700 dark:bg-zinc-950 dark:text-white">
+                        <option value="">Choose {form.resourceType}</option>
+                        {(form.resourceType === "file" ? files : folders).map((item) => (
+                          <option key={item.id} value={item.id}>
+                            {resourceName(item)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <button type="button" onClick={() => setShowUpload(true)}
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-gray-200 px-3 py-2 text-xs font-semibold text-gray-600 transition hover:border-orange-200 hover:text-orange-600 dark:border-zinc-700 dark:text-gray-300">
+                      <Upload size={12} /> Upload new files or folders
+                    </button>
+                  </div>
+
+                  <div className="space-y-3">
+                    <div>
+                      <span className="mb-1.5 block text-xs font-semibold text-gray-600 dark:text-gray-300">Send type</span>
+                      <div className="grid grid-cols-3 gap-2">
+                        {(["link", "qr", "email"] as ShareMethod[]).map((method) => (
+                          <button key={method} type="button"
+                            onClick={() => setForm((prev) => ({ ...prev, method }))}
+                            className={`flex items-center justify-center gap-1.5 rounded-xl border px-2 py-2 text-xs font-semibold uppercase transition ${
+                              form.method === method
+                                ? "border-orange-300 bg-orange-50 text-orange-600 dark:border-orange-800/60 dark:bg-orange-950/20"
+                                : "border-gray-200 text-gray-500 hover:border-orange-200 dark:border-zinc-700"
+                            }`}>
+                            {methodIcon(method, 13)}
+                            {method}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <label className="block">
+                        <span className="mb-1.5 block text-xs font-semibold text-gray-600 dark:text-gray-300">Permission</span>
+                        <select value={form.permission}
+                          onChange={(e) => setForm((prev) => ({ ...prev, permission: e.target.value as "view" | "download" }))}
+                          className="h-10 w-full rounded-xl border border-gray-200 bg-white px-3 text-sm outline-none focus:border-orange-400 dark:border-zinc-700 dark:bg-zinc-950 dark:text-white">
+                          <option value="download">View and download</option>
+                          <option value="view">View only</option>
+                        </select>
+                      </label>
+                      <label className="block">
+                        <span className="mb-1.5 block text-xs font-semibold text-gray-600 dark:text-gray-300">Expiry</span>
+                        <select value={form.expiresIn}
+                          onChange={(e) => setForm((prev) => ({ ...prev, expiresIn: Number(e.target.value) }))}
+                          className="h-10 w-full rounded-xl border border-gray-200 bg-white px-3 text-sm outline-none focus:border-orange-400 dark:border-zinc-700 dark:bg-zinc-950 dark:text-white">
+                          <option value={1}>1 day</option>
+                          <option value={7}>7 days</option>
+                          <option value={30}>30 days</option>
+                          <option value={90}>90 days</option>
+                        </select>
+                      </label>
+                    </div>
+
+                    <label className="block">
+                      <span className="mb-1.5 block text-xs font-semibold text-gray-600 dark:text-gray-300">Password</span>
+                      <input value={form.password}
+                        onChange={(e) => setForm((prev) => ({ ...prev, password: e.target.value }))}
+                        placeholder="Optional"
+                        className="h-10 w-full rounded-xl border border-gray-200 bg-white px-3 text-sm outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-500/15 dark:border-zinc-700 dark:bg-zinc-950 dark:text-white" />
+                    </label>
+
+                    <label className="block">
+                      <span className="mb-1.5 block text-xs font-semibold text-gray-600 dark:text-gray-300">Recipients</span>
+                      <input value={form.recipients}
+                        onChange={(e) => setForm((prev) => ({ ...prev, recipients: e.target.value }))}
+                        placeholder="Email addresses, optional"
+                        className="h-10 w-full rounded-xl border border-gray-200 bg-white px-3 text-sm outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-500/15 dark:border-zinc-700 dark:bg-zinc-950 dark:text-white" />
+                    </label>
+                  </div>
+                </div>
+
+                <div className="mt-5 flex justify-end gap-2">
+                  <button type="button" onClick={() => setShowCreate(false)}
+                    className="rounded-xl border border-gray-200 px-4 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-50 dark:border-zinc-700 dark:text-gray-300 dark:hover:bg-zinc-800">
+                    Cancel
+                  </button>
+                  <button type="button" onClick={handleCreateLink} disabled={creating}
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-orange-500 px-4 py-2 text-sm font-semibold text-white hover:bg-orange-600 disabled:opacity-60">
+                    {creating ? <RefreshCw size={14} className="animate-spin" /> : <LinkIcon size={14} />}
+                    Generate link
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <UploadModal
+          open={showUpload}
+          transferMode
+          onClose={() => setShowUpload(false)}
+          onUploadComplete={() => {
+            load();
+            if (showCreate) {
+              Promise.all([filesApi.list({ limit: 100 }), foldersApi.list({ limit: 100 })])
+                .then(([fileRes, folderRes]) => {
+                  const fileData = fileRes.data?.data ?? fileRes.data;
+                  const folderData = folderRes.data?.data ?? folderRes.data;
+                  setFiles(fileData?.files ?? (Array.isArray(fileData) ? fileData : []));
+                  setFolders(folderData?.folders ?? (Array.isArray(folderData) ? folderData : []));
+                })
+                .catch(() => {});
+            }
+          }}
         />
       </DashboardLayout>
     </AuthGuard>

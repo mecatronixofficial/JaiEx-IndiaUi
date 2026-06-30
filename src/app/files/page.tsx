@@ -1,9 +1,10 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Fragment, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import AuthGuard from "@/components/auth/AuthGuard";
+import { useAuth } from "@/contexts/AuthContext";
 import { FileCard } from "@/components/files/FileCard";
 import { FileTypeIcon } from "@/components/ui/FileTypeIcon";
 import { Spinner } from "@/components/ui";
@@ -15,7 +16,8 @@ import {
   Image as ImageIcon, LayoutGrid, List, RefreshCw, Send, Trash2,
   Upload, Video, FileSpreadsheet, X, Search,
   SortAsc, SortDesc, MoveRight, CheckSquare, Square,
-  HardDrive, ChevronLeft, ChevronRight, Download, Star,
+  HardDrive, ChevronLeft, ChevronRight, Download, Star, ShieldCheck, UserRound, Users,
+  CalendarDays, Clock3, Database, GitBranch, Route,
 } from "lucide-react";
 import { handleApiError } from "@/lib/error-handler";
 import { showToast } from "@/lib/toast";
@@ -27,8 +29,16 @@ type SortField  = "name" | "size" | "createdAt";
 type SortDir    = "asc" | "desc";
 type TypeFilter = "all" | "image" | "video" | "document" | "spreadsheet" | "other";
 type ViewMode   = "grid" | "list";
+type OwnerRole = "superadmin" | "admin" | "user";
+type OwnerRoleFilter = "all" | OwnerRole;
+
+type OwnedFileItem = FileItem & {
+  uploadedBy?: { id?: string; _id?: string; name?: string; email?: string; role?: string };
+};
 
 const PAGE_SIZE = 24;
+const VALID_TYPE_FILTERS: TypeFilter[] = ["all", "image", "video", "document", "spreadsheet", "other"];
+const VALID_OWNER_ROLE_FILTERS: OwnerRole[] = ["superadmin", "admin", "user"];
 
 const TYPE_OPTIONS: {
   value: TypeFilter; label: string;
@@ -42,12 +52,59 @@ const TYPE_OPTIONS: {
   { value: "other",       label: "Other",        icon: <Files size={14} />,           color: "text-gray-500",   accent: "bg-gray-500" },
 ];
 
-function getFileType(mime = ""): TypeFilter {
-  if (mime.startsWith("image/"))                                              return "image";
-  if (mime.startsWith("video/"))                                             return "video";
-  if (mime.includes("spreadsheet") || mime.includes("csv"))                  return "spreadsheet";
-  if (mime.includes("pdf") || mime.includes("word") || mime.startsWith("text/") || mime.includes("presentation")) return "document";
+const OWNER_OPTIONS: {
+  value: OwnerRoleFilter; label: string; icon: React.ReactNode; color: string;
+}[] = [
+  { value: "all", label: "All uploaders", icon: <Users size={14} />, color: "text-orange-500" },
+  { value: "superadmin", label: "Superadmin files", icon: <ShieldCheck size={14} />, color: "text-rose-500" },
+  { value: "admin", label: "Admin files", icon: <ShieldCheck size={14} />, color: "text-blue-500" },
+  { value: "user", label: "User files", icon: <UserRound size={14} />, color: "text-green-500" },
+];
+
+function getFileType(file: Pick<FileItem, "mimeType" | "extension" | "originalName" | "name">): TypeFilter {
+  const mime = (file.mimeType ?? "").toLowerCase();
+  const ext = (file.extension || file.originalName?.split(".").pop() || file.name?.split(".").pop() || "").toLowerCase();
+  if (mime.startsWith("image/") || ["jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "heic"].includes(ext)) return "image";
+  if (mime.startsWith("video/") || ["mp4", "mov", "avi", "mkv", "webm", "m4v"].includes(ext)) return "video";
+  if (mime.includes("spreadsheet") || mime.includes("excel") || mime.includes("csv") || ["xls", "xlsx", "csv", "ods"].includes(ext)) return "spreadsheet";
+  if (
+    mime.includes("pdf") ||
+    mime.includes("word") ||
+    mime.includes("document") ||
+    mime.startsWith("text/") ||
+    mime.includes("presentation") ||
+    mime.includes("powerpoint") ||
+    ["pdf", "doc", "docx", "txt", "rtf", "ppt", "pptx", "pages", "odt"].includes(ext)
+  ) return "document";
   return "other";
+}
+
+function getQueryType(value: string | null): TypeFilter {
+  return value && VALID_TYPE_FILTERS.includes(value as TypeFilter) ? (value as TypeFilter) : "all";
+}
+
+function getQueryOwnerRole(value: string | null): OwnerRoleFilter {
+  return value && VALID_OWNER_ROLE_FILTERS.includes(value as OwnerRole) ? (value as OwnerRole) : "all";
+}
+
+function getOwnerRole(file: OwnedFileItem): OwnerRole {
+  const role = file.owner?.role ?? file.uploadedBy?.role;
+  if (role === "superadmin" || role === "admin") return role;
+  return "user";
+}
+
+function getOwnerLabel(file: OwnedFileItem) {
+  return file.owner?.name ?? file.uploadedBy?.name ?? file.owner?.email ?? file.uploadedBy?.email ?? "Unknown owner";
+}
+
+function getFolderLabel(file: FileItem, folderMap: Map<string, string>) {
+  const folder = file.folderId as unknown;
+  if (folder && typeof folder === "object") {
+    const data = folder as { id?: string; _id?: string; name?: string; path?: string };
+    return data.name ?? data.path ?? (data.id || data._id ? "Folder" : "Root");
+  }
+  if (typeof folder === "string" && folder) return folderMap.get(folder) ?? "Folder";
+  return "Root";
 }
 
 /* ─── Suspense wrapper ─── */
@@ -64,6 +121,11 @@ export default function FilesPage() {
 ════════════════════════════════════════════ */
 function FilesPageContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const { user } = useAuth();
+  const queryType = getQueryType(searchParams.get("type"));
+  const ownerRoleFilter = getQueryOwnerRole(searchParams.get("ownerRole"));
+  const includeFolderFiles = searchParams.get("folders") === "1";
 
   const [files,            setFiles]            = useState<FileItem[]>([]);
   const [loading,          setLoading]          = useState(true);
@@ -72,7 +134,7 @@ function FilesPageContent() {
   const [page,             setPage]             = useState(1);
   const [view,             setView]             = useState<ViewMode>("grid");
   const [search,           setSearch]           = useState("");
-  const [typeFilter,       setTypeFilter]       = useState<TypeFilter>("all");
+  const typeFilter = queryType;
   const [sortField,        setSortField]        = useState<SortField>("createdAt");
   const [sortDir,          setSortDir]          = useState<SortDir>("desc");
   const [selected,         setSelected]         = useState<Set<string>>(new Set());
@@ -83,6 +145,7 @@ function FilesPageContent() {
   const [folderSearch,     setFolderSearch]     = useState("");
   const [movingFolderId,   setMovingFolderId]   = useState<string | null | undefined>(undefined);
   const [submitting,       setSubmitting]       = useState(false);
+  const isSuperadmin = user?.role === "superadmin";
 
   /* folderId → name lookup */
   const folderMap = useMemo(
@@ -105,6 +168,9 @@ function FilesPageContent() {
       else setLoading(true);
       const params: Record<string, unknown> = { page, limit: PAGE_SIZE };
       if (search.trim()) params.q = search.trim();
+      if (typeFilter !== "all") params.type = typeFilter;
+      if (typeFilter !== "all" && includeFolderFiles) params.includeFolderFiles = true;
+      if (isSuperadmin && ownerRoleFilter !== "all") params.ownerRole = ownerRoleFilter;
       const res = await filesApi.list(params);
       const inner = res.data?.data ?? res.data;
       const f: FileItem[] = inner?.files ?? (Array.isArray(inner) ? inner : []);
@@ -116,7 +182,7 @@ function FilesPageContent() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [page, search]);
+  }, [page, search, typeFilter, includeFolderFiles, isSuperadmin, ownerRoleFilter]);
 
   useEffect(() => {
     const t = setTimeout(() => load(), search ? 400 : 0);
@@ -126,7 +192,7 @@ function FilesPageContent() {
   /* ── Client-side: type filter + sort ── */
   const filtered = useMemo(() => {
     let items = files;
-    if (typeFilter !== "all") items = items.filter((f) => getFileType(f.mimeType) === typeFilter);
+    if (typeFilter !== "all") items = items.filter((f) => getFileType(f) === typeFilter);
     return [...items].sort((a, b) => {
       let diff = 0;
       if (sortField === "name")      diff = a.name.localeCompare(b.name);
@@ -139,17 +205,43 @@ function FilesPageContent() {
   /* ── Stats from current page ── */
   const typeStats = useMemo(() => {
     const counts: Record<TypeFilter, number> = { all: files.length, image: 0, video: 0, document: 0, spreadsheet: 0, other: 0 };
-    for (const f of files) counts[getFileType(f.mimeType)]++;
+    for (const f of files) counts[getFileType(f)]++;
+    return counts;
+  }, [files]);
+
+  const ownerStats = useMemo(() => {
+    const counts: Record<OwnerRoleFilter, number> = { all: files.length, superadmin: 0, admin: 0, user: 0 };
+    for (const f of files) counts[getOwnerRole(f as OwnedFileItem)]++;
     return counts;
   }, [files]);
 
   const totalSize  = useMemo(() => files.reduce((s, f) => s + (f.size ?? 0), 0), [files]);
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const allSelected = filtered.length > 0 && selected.size === filtered.length;
+  const rootFileCount = useMemo(() => files.filter((f) => getFolderLabel(f, folderMap) === "Root").length, [files, folderMap]);
+  const folderFileCount = Math.max(files.length - rootFileCount, 0);
+  const sharedCount = useMemo(() => files.filter((f) => f.isShared).length, [files]);
+  const latestUpdatedAt = useMemo(() => {
+    const dates = files
+      .map((file) => file.updatedAt ?? file.createdAt)
+      .filter(Boolean)
+      .map((date) => new Date(date).getTime())
+      .filter(Number.isFinite);
+    return dates.length ? new Date(Math.max(...dates)).toISOString() : undefined;
+  }, [files]);
+  const activeFileCount = useMemo(
+    () => files.filter((file) => !file.status || file.status === "active").length,
+    [files],
+  );
 
   /* ── Selection ── */
   function toggleSelect(id: string, sel: boolean) {
-    setSelected((prev) => { const n = new Set(prev); sel ? n.add(id) : n.delete(id); return n; });
+    setSelected((prev) => {
+      const n = new Set(prev);
+      if (sel) n.add(id);
+      else n.delete(id);
+      return n;
+    });
   }
   function toggleAll() {
     setSelected(allSelected ? new Set() : new Set(filtered.map((f) => f.id)));
@@ -162,7 +254,39 @@ function FilesPageContent() {
   }
 
   /* ── Type filter (resets page) ── */
-  function setType(t: TypeFilter) { setTypeFilter(t); setPage(1); setSelected(new Set()); }
+  function setType(t: TypeFilter) {
+    setPage(1);
+    setSelected(new Set());
+    const params = new URLSearchParams(searchParams.toString());
+    if (t === "all") {
+      params.delete("type");
+      params.delete("folders");
+    } else {
+      params.set("type", t);
+    }
+    const query = params.toString();
+    router.replace(query ? `/files?${query}` : "/files");
+  }
+
+  function setIncludeFolderFiles(next: boolean) {
+    setPage(1);
+    setSelected(new Set());
+    const params = new URLSearchParams(searchParams.toString());
+    if (next) params.set("folders", "1");
+    else params.delete("folders");
+    const query = params.toString();
+    router.replace(query ? `/files?${query}` : "/files");
+  }
+
+  function setOwnerRole(role: OwnerRoleFilter) {
+    setPage(1);
+    setSelected(new Set());
+    const params = new URLSearchParams(searchParams.toString());
+    if (role === "all") params.delete("ownerRole");
+    else params.set("ownerRole", role);
+    const query = params.toString();
+    router.replace(query ? `/files?${query}` : "/files");
+  }
 
   /* ── Actions ── */
   function handleSendSelected() {
@@ -203,6 +327,19 @@ function FilesPageContent() {
   );
 
   const activeMeta = TYPE_OPTIONS.find((t) => t.value === typeFilter)!;
+  const documentGroups = useMemo(() => {
+    const groups = [
+      { role: "superadmin" as OwnerRole, title: "Superadmin documents", files: [] as FileItem[] },
+      { role: "admin" as OwnerRole, title: "Admin documents", files: [] as FileItem[] },
+      { role: "user" as OwnerRole, title: "User documents", files: [] as FileItem[] },
+    ];
+    for (const file of filtered) {
+      groups.find((group) => group.role === getOwnerRole(file as OwnedFileItem))?.files.push(file);
+    }
+    return groups.filter((group) => group.files.length > 0);
+  }, [filtered]);
+  const showDocumentGroups = isSuperadmin && typeFilter === "document" && documentGroups.length > 1;
+  const sectionLabel = typeFilter === "all" ? "Files" : activeMeta.label;
 
   /* ════════════════════════════════════════════
      RENDER
@@ -215,36 +352,81 @@ function FilesPageContent() {
           {/* ── Hero header ── */}
           <div className="relative overflow-hidden rounded-2xl border border-orange-200/50 bg-linear-to-br from-orange-50 via-amber-50/30 to-white px-6 py-5 dark:border-orange-900/20 dark:from-orange-950/20 dark:via-amber-900/10 dark:to-zinc-900/0">
             <div className="pointer-events-none absolute -right-10 -top-10 h-40 w-40 rounded-full bg-orange-400/6 blur-3xl" />
-            <div className="relative flex flex-wrap items-center justify-between gap-4">
-              <div className="flex items-center gap-4">
-                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-linear-to-br from-orange-500 to-amber-500 text-white shadow-lg shadow-orange-500/20">
-                  <Files size={22} />
+            <div className="relative">
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div className="flex items-center gap-4">
+                  <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-linear-to-br from-orange-500 to-amber-500 text-white shadow-lg shadow-orange-500/20">
+                    <Files size={22} />
+                  </div>
+                  <div>
+                    <h1 className="text-xl font-extrabold tracking-tight text-(--text)">
+                      {activeMeta.label}
+                    </h1>
+                    <p className="mt-0.5 text-sm text-(--text-muted)">
+                      {loading
+                        ? "Loading…"
+                        : `${total.toLocaleString()} file${total !== 1 ? "s" : ""}${totalSize > 0 ? ` · ${formatBytes(totalSize)} on this page` : ""}`}
+                    </p>
+                    {!loading && (
+                      <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-(--text-muted)">
+                        <span className="inline-flex items-center gap-1 rounded-full border border-orange-200/60 bg-white/70 px-2 py-0.5 text-orange-600 dark:border-orange-900/30 dark:bg-zinc-900/50 dark:text-orange-400">
+                          <Route size={10} />
+                          {typeFilter === "all" ? "All files" : activeMeta.label}
+                          {typeFilter !== "all" && (includeFolderFiles ? " · Folder contents included" : " · Root only")}
+                        </span>
+                        {latestUpdatedAt && (
+                          <span className="inline-flex items-center gap-1 rounded-full border border-gray-200/70 bg-white/70 px-2 py-0.5 dark:border-zinc-800 dark:bg-zinc-900/50">
+                            <Clock3 size={10} />
+                            Updated {formatRelative(latestUpdatedAt)}
+                          </span>
+                        )}
+                        {ownerRoleFilter !== "all" && (
+                          <span className="inline-flex items-center gap-1 rounded-full border border-blue-200/70 bg-white/70 px-2 py-0.5 text-blue-600 dark:border-blue-900/30 dark:bg-zinc-900/50 dark:text-blue-400">
+                            <UserRound size={10} />
+                            {OWNER_OPTIONS.find((option) => option.value === ownerRoleFilter)?.label}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
-                <div>
-                  <h1 className="text-xl font-extrabold tracking-tight text-(--text)">
-                    {activeMeta.label}
-                  </h1>
-                  <p className="mt-0.5 text-sm text-(--text-muted)">
-                    {loading
-                      ? "Loading…"
-                      : `${total.toLocaleString()} file${total !== 1 ? "s" : ""}${totalSize > 0 ? ` · ${formatBytes(totalSize)} on this page` : ""}`}
-                  </p>
-                </div>
-              </div>
 
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="secondary" size="sm"
-                  leftIcon={<RefreshCw size={13} className={refreshing ? "animate-spin" : ""} />}
-                  onClick={() => load(true)} disabled={refreshing || loading} aria-label="Refresh">
-                  Refresh
-                </Button>
-                <Button leftIcon={<Upload size={15} />} onClick={() => setShowUpload(true)}>
-                  Upload
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="secondary" size="sm"
+                    leftIcon={<RefreshCw size={13} className={refreshing ? "animate-spin" : ""} />}
+                    onClick={() => load(true)} disabled={refreshing || loading} aria-label="Refresh">
+                    Refresh
+                  </Button>
+                  <Button leftIcon={<Upload size={15} />} onClick={() => setShowUpload(true)}>
+                    Upload
+                  </Button>
+                </div>
               </div>
             </div>
           </div>
+
+          {/* ── Project data strip ── */}
+          {!loading && (
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+              {[
+                { label: "Current Scope", value: filtered.length.toLocaleString(), sub: typeFilter === "all" ? "All file types" : activeMeta.label, icon: activeMeta.icon, color: activeMeta.color },
+                { label: "Root Files", value: rootFileCount.toLocaleString(), sub: `${activeFileCount} active on page`, icon: <Files size={14} />, color: "text-blue-500" },
+                { label: "Folder Contents", value: folderFileCount.toLocaleString(), sub: includeFolderFiles ? "Included in view" : "Hidden by default", icon: <GitBranch size={14} />, color: "text-green-500" },
+                { label: "Storage", value: totalSize > 0 ? formatBytes(totalSize) : "0 B", sub: `${sharedCount} shared file${sharedCount !== 1 ? "s" : ""}`, icon: <Database size={14} />, color: "text-purple-500" },
+                { label: "Last Change", value: latestUpdatedAt ? formatRelative(latestUpdatedAt) : "—", sub: latestUpdatedAt ? formatDateTime(latestUpdatedAt) : "No activity", icon: <CalendarDays size={14} />, color: "text-red-500" },
+              ].map((stat) => (
+                <div key={stat.label} className="rounded-2xl border border-gray-200/70 bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900">
+                  <div className={`mb-1 flex items-center gap-1.5 text-xs font-semibold ${stat.color}`}>
+                    {stat.icon}
+                    {stat.label}
+                  </div>
+                  <p className="text-lg font-bold tabular-nums text-(--text)">{stat.value}</p>
+                  <p className="mt-0.5 truncate text-[11px] text-(--text-muted)">{stat.sub}</p>
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* ── Type stat cards (6 chips) ── */}
           <div className="grid grid-cols-3 gap-2.5 sm:grid-cols-6">
@@ -270,6 +452,34 @@ function FilesPageContent() {
               );
             })}
           </div>
+
+          {isSuperadmin && (
+            <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
+              {OWNER_OPTIONS.map((option) => {
+                const active = ownerRoleFilter === option.value;
+                const count = ownerStats[option.value];
+                return (
+                  <button key={option.value} type="button" onClick={() => setOwnerRole(option.value)}
+                    className={cn(
+                      "group flex items-center gap-3 rounded-xl border p-3 text-left transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md",
+                      active
+                        ? "border-orange-300 bg-orange-50 dark:border-orange-700/50 dark:bg-orange-950/20"
+                        : "border-gray-200/80 bg-white hover:border-orange-200 dark:border-zinc-800 dark:bg-zinc-900",
+                    )}>
+                    <span className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-(--bg-2)", option.color)}>
+                      {option.icon}
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block truncate text-xs font-semibold text-(--text)">{option.label}</span>
+                      <span className="text-xs text-(--text-muted)">
+                        {loading ? "Loading" : `${count} file${count !== 1 ? "s" : ""}`}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           {/* ── Toolbar ── */}
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -307,6 +517,18 @@ function FilesPageContent() {
             </div>
 
             <div className="flex items-center gap-2">
+              {typeFilter !== "all" && (
+                <button type="button" onClick={() => setIncludeFolderFiles(!includeFolderFiles)}
+                  className={cn(
+                    "flex h-9 items-center gap-1.5 rounded-xl border px-3 text-xs font-semibold transition",
+                    includeFolderFiles
+                      ? "border-orange-300 bg-orange-50 text-orange-600 dark:border-orange-700/50 dark:bg-orange-950/20 dark:text-orange-400"
+                      : "border-gray-200/80 bg-white text-(--text-muted) hover:border-orange-200 hover:text-orange-600 dark:border-zinc-700 dark:bg-zinc-900",
+                  )}>
+                  <FolderIcon size={13} />
+                  {includeFolderFiles ? "Folder contents shown" : "Show folder contents"}
+                </button>
+              )}
               {!loading && filtered.length > 0 && (
                 <button type="button" onClick={toggleAll}
                   className="flex items-center gap-1.5 text-xs font-semibold text-(--text-muted) transition-colors hover:text-(--text)">
@@ -386,32 +608,72 @@ function FilesPageContent() {
 
           ) : view === "grid" ? (
             /* ── Grid view ── */
-            <div className="grid grid-cols-[repeat(auto-fill,minmax(176px,1fr))] gap-3">
-              {filtered.map((f) => (
-                <div key={f.id} className="flex flex-col gap-1">
-                  <FileCard
-                    file={f}
-                    onRefresh={() => load(true)}
-                    selected={selected.has(f.id)}
-                    onSelect={toggleSelect}
-                  />
-                  {f.folderId && folderMap.get(f.folderId) && (
-                    <div className="flex items-center gap-1.5 rounded-lg border border-orange-200/70 bg-orange-50/80 px-2.5 py-1 text-[11px] text-orange-600 dark:border-orange-900/30 dark:bg-orange-950/20 dark:text-orange-400">
-                      <FolderIcon size={10} className="shrink-0" />
-                      <span className="truncate font-medium">
-                        {truncate(folderMap.get(f.folderId)!, 22)}
-                      </span>
-                    </div>
-                  )}
+            <section>
+              <FilesSectionHeader
+                label={sectionLabel}
+                count={filtered.length}
+                size={totalSize}
+                activeMetaLabel={activeMeta.label}
+                typeFilter={typeFilter}
+                includeFolderFiles={includeFolderFiles}
+              />
+              {showDocumentGroups ? (
+                <div className="space-y-5">
+                  {documentGroups.map((group) => (
+                    <section key={group.role} className="space-y-2.5">
+                      <div className="flex items-center justify-between gap-3">
+                        <h2 className="text-sm font-bold text-(--text)">{group.title}</h2>
+                        <span className="rounded-full bg-(--bg-2) px-2.5 py-1 text-xs font-semibold text-(--text-muted)">
+                          {group.files.length} file{group.files.length !== 1 ? "s" : ""}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-[repeat(auto-fill,minmax(176px,1fr))] gap-3">
+                        {group.files.map((f) => (
+                          <div key={f.id} className="flex flex-col gap-1">
+                            <FileCard
+                              file={f}
+                              onRefresh={() => load(true)}
+                              selected={selected.has(f.id)}
+                              onSelect={toggleSelect}
+                            />
+                            <FileMetaBadges file={f} folderMap={folderMap} />
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  ))}
                 </div>
-              ))}
-            </div>
+              ) : (
+                <div className="grid grid-cols-[repeat(auto-fill,minmax(176px,1fr))] gap-3">
+                  {filtered.map((f) => (
+                    <div key={f.id} className="flex flex-col gap-1">
+                      <FileCard
+                        file={f}
+                        onRefresh={() => load(true)}
+                        selected={selected.has(f.id)}
+                        onSelect={toggleSelect}
+                      />
+                      <FileMetaBadges file={f} folderMap={folderMap} />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
 
           ) : (
             /* ── List view ── */
-            <div className="overflow-hidden rounded-2xl border border-gray-200/80 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-              <div className="overflow-x-auto">
-                <table className="w-full border-collapse text-sm">
+            <section>
+              <FilesSectionHeader
+                label={sectionLabel}
+                count={filtered.length}
+                size={totalSize}
+                activeMetaLabel={activeMeta.label}
+                typeFilter={typeFilter}
+                includeFolderFiles={includeFolderFiles}
+              />
+              <div className="overflow-hidden rounded-2xl border border-gray-200/80 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+                <div className="overflow-x-auto">
+                  <table className="w-full border-collapse text-sm">
                   <thead className="border-b border-gray-100 bg-gray-50/80 dark:border-zinc-800 dark:bg-zinc-800/30">
                     <tr>
                       <th className="w-12 px-4 py-3.5" scope="col">
@@ -444,20 +706,53 @@ function FilesPageContent() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-50 dark:divide-zinc-800/60">
-                    {filtered.map((file) => (
-                      <FileListRow
-                        key={file.id}
-                        file={file}
-                        selected={selected.has(file.id)}
-                        onSelect={toggleSelect}
-                        folderName={file.folderId ? (folderMap.get(file.folderId) ?? undefined) : undefined}
-                        onRefresh={() => load(true)}
-                        onSend={() => {
-                          sessionStorage.setItem("pending_send", JSON.stringify([{ id: file.id, name: file.name, size: file.size, mimeType: file.mimeType, extension: file.extension }]));
-                          router.push("/transfers/send");
-                        }}
-                      />
-                    ))}
+                    {showDocumentGroups ? (
+                      documentGroups.map((group) => (
+                        <Fragment key={group.role}>
+                          <tr className="bg-gray-50/80 dark:bg-zinc-800/30">
+                            <td colSpan={7} className="px-4 py-2.5">
+                              <div className="flex items-center justify-between gap-3">
+                                <span className="text-xs font-bold text-(--text)">{group.title}</span>
+                                <span className="text-xs font-semibold text-(--text-muted)">
+                                  {group.files.length} file{group.files.length !== 1 ? "s" : ""}
+                                </span>
+                              </div>
+                            </td>
+                          </tr>
+                          {group.files.map((file) => (
+                            <FileListRow
+                              key={file.id}
+                              file={file}
+                              selected={selected.has(file.id)}
+                              onSelect={toggleSelect}
+                              folderName={getFolderLabel(file, folderMap)}
+                              ownerName={getOwnerLabel(file as OwnedFileItem)}
+                              onRefresh={() => load(true)}
+                              onSend={() => {
+                                sessionStorage.setItem("pending_send", JSON.stringify([{ id: file.id, name: file.name, size: file.size, mimeType: file.mimeType, extension: file.extension }]));
+                                router.push("/transfers/send");
+                              }}
+                            />
+                          ))}
+                        </Fragment>
+                      ))
+                    ) : (
+                      filtered.map((file) => (
+                        <FileListRow
+                          key={file.id}
+                          file={file}
+                          selected={selected.has(file.id)}
+                          onSelect={toggleSelect}
+                          folderName={getFolderLabel(file, folderMap)}
+                          ownerName={getOwnerLabel(file as OwnedFileItem)}
+                          onRefresh={() => load(true)}
+                          onSend={() => {
+                            sessionStorage.setItem("pending_send", JSON.stringify([{ id: file.id, name: file.name, size: file.size, mimeType: file.mimeType, extension: file.extension }]));
+                            router.push("/transfers/send");
+                          }}
+                        />
+                      ))
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -469,6 +764,7 @@ function FilesPageContent() {
                 </p>
               </div>
             </div>
+            </section>
           )}
 
           {/* ── Pagination ── */}
@@ -603,16 +899,72 @@ function FilesPageContent() {
   );
 }
 
+function FileMetaBadges({ file, folderMap }: { file: FileItem; folderMap: Map<string, string> }) {
+  const owner = getOwnerLabel(file as OwnedFileItem);
+  const folder = getFolderLabel(file, folderMap);
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center gap-1.5 rounded-lg border border-gray-200/80 bg-white px-2.5 py-1 text-[11px] text-(--text-muted) dark:border-zinc-800 dark:bg-zinc-900">
+        <UserRound size={10} className="shrink-0" />
+        <span className="truncate font-medium">Uploaded by {truncate(owner, 24)}</span>
+      </div>
+      <div className="flex items-center gap-1.5 rounded-lg border border-orange-200/70 bg-orange-50/80 px-2.5 py-1 text-[11px] text-orange-600 dark:border-orange-900/30 dark:bg-orange-950/20 dark:text-orange-400">
+        <FolderIcon size={10} className="shrink-0" />
+        <span className="truncate font-medium">Folder: {truncate(folder, 24)}</span>
+      </div>
+    </div>
+  );
+}
+
+function FilesSectionHeader({
+  label,
+  count,
+  size,
+  activeMetaLabel,
+  typeFilter,
+  includeFolderFiles,
+}: {
+  label: string;
+  count: number;
+  size: number;
+  activeMetaLabel: string;
+  typeFilter: TypeFilter;
+  includeFolderFiles: boolean;
+}) {
+  return (
+    <div className="mb-3 flex flex-wrap items-center gap-3">
+      <p className="text-xs font-bold uppercase tracking-widest text-(--text-muted)">
+        {label} · {count}
+      </p>
+      {typeFilter !== "all" && (
+        <div className="flex items-center gap-1.5 rounded-full border border-orange-200/60 bg-orange-50/80 px-2.5 py-0.5 text-[10px] text-orange-600 dark:border-orange-900/30 dark:bg-orange-950/20 dark:text-orange-400">
+          <FileText size={9} />
+          <span className="font-medium">{activeMetaLabel}</span>
+        </div>
+      )}
+      <div className="flex items-center gap-1.5 rounded-full border border-gray-200/70 bg-white px-2.5 py-0.5 text-[10px] text-(--text-muted) dark:border-zinc-800 dark:bg-zinc-900">
+        <FolderIcon size={9} />
+        <span className="font-medium">{includeFolderFiles ? "Folder contents shown" : "Root files first"}</span>
+      </div>
+      {size > 0 && (
+        <span className="text-[11px] text-(--text-muted)">{formatBytes(size)}</span>
+      )}
+    </div>
+  );
+}
+
 /* ─────────────────────────────────────────────
    FILE LIST ROW — custom table row with folder column
 ───────────────────────────────────────────── */
 function FileListRow({
-  file, selected, onSelect, folderName, onRefresh, onSend,
+  file, selected, onSelect, folderName, ownerName, onRefresh, onSend,
 }: {
   file: FileItem;
   selected: boolean;
   onSelect: (id: string, sel: boolean) => void;
   folderName?: string;
+  ownerName?: string;
   onRefresh: () => void;
   onSend: () => void;
 }) {
@@ -668,6 +1020,11 @@ function FileListRow({
               )}
             </div>
             <p className="font-mono text-[11px] text-(--text-muted)">{file.id.slice(0, 12)}…</p>
+            {ownerName && (
+              <p className="max-w-48 truncate text-[11px] font-medium text-(--text-muted)">
+                Uploaded by {ownerName}
+              </p>
+            )}
           </div>
         </div>
       </td>

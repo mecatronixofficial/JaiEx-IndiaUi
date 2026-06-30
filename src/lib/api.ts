@@ -298,13 +298,16 @@ export const usersApi = {
 
 export const filesApi = {
   list: (params?: Record<string, unknown>, signal?: AbortSignal) => {
-    // Backend expects `search` not `q`; drop unsupported `type` filter.
+    // Backend expects `search` and `category` query names.
     if (params) {
       const mapped: Record<string, unknown> = { ...params };
-      delete mapped.type;
       if (mapped.q !== undefined) {
         mapped.search = mapped.q;
         delete mapped.q;
+      }
+      if (mapped.type !== undefined) {
+        mapped.category = mapped.type;
+        delete mapped.type;
       }
       params = mapped;
     }
@@ -660,6 +663,17 @@ export const linksApi = {
     getApi().get(`/links/l/${shortCode}/file/${fileId}/download`, password ? { params: { password } } : {}),
 
   /* ── user (own links) ── */
+  create: (data: {
+    resourceType: "file" | "folder";
+    resourceId: string;
+    method?: "link" | "qr" | "email";
+    permission?: "view" | "download";
+    privacy?: "public" | "private" | "specific";
+    expiresIn?: number;
+    password?: string;
+    recipients?: string[];
+  }) => getApi().post("/links", data),
+
   list: (params?: { status?: string; page?: number; limit?: number }) =>
     getApi().get("/links", { params }),
 
@@ -667,6 +681,8 @@ export const linksApi = {
   enable:  (id: string) => getApi().patch(`/links/${id}/enable`),
   delete:  (id: string) => getApi().delete(`/links/${id}`),
   renew:   (id: string, days?: number) => getApi().patch(`/links/${id}/renew`, { days }),
+  accesses: (id: string, params?: { page?: number; limit?: number }) =>
+    getApi().get(`/links/${id}/accesses`, { params }),
 
   /* ── admin (all users' links, no ownership check) ── */
   adminList: (params?: { status?: string; page?: number; limit?: number }) =>
@@ -681,11 +697,18 @@ export const linksApi = {
 export const adminApi = {
   overview: () => getApi().get("/admin/overview"),
 
+  /** Superadmin-only full dashboard payload for the improved admin page. */
+  dashboard: () => getApi().get("/admin/dashboard"),
+
   storage: () => getApi().get("/admin/storage"),
 
   /** Cross-entity activity feed: recent file uploads, transfers, user registrations. */
   activity: (params?: { limit?: number }) =>
     getApi().get("/admin/activity", { params }),
+
+  /** Superadmin audit log view: currently backed by the cross-entity audit/activity stream. */
+  auditLogs: (params?: { limit?: number }) =>
+    getApi().get("/admin/audit-logs", { params }),
 
   users: (params?: {
     page?: number;
@@ -729,8 +752,11 @@ export const adminApi = {
     status?: "uploading" | "completed" | "failed" | "aborted";
   }) => getApi().get("/admin/upload-sessions", { params }),
 
-  /** Superadmin-only system view — same data as overview but enforces superadmin role. */
-  system: () => getApi().get("/admin/system"),
+  /** Superadmin-only system view with optional service, incident, and runtime details. */
+  system: (params?: { include?: string }) => getApi().get("/admin/system", { params }),
+
+  /** Superadmin-only database view with MongoDB collection and storage stats. */
+  database: () => getApi().get("/admin/database"),
 };
 
 /* =========================

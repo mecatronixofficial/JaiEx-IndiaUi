@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useMemo, useState, useEffect, useCallback } from "react";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import AuthGuard from "@/components/auth/AuthGuard";
 import { adminApi, usersApi } from "@/lib/api";
@@ -8,9 +8,9 @@ import { User } from "@/types";
 import { Avatar, Modal, Spinner } from "@/components/ui";
 import { formatBytes, formatCompactNumber } from "@/lib/utils";
 import {
-  HardDrive, Image, Video, FileText, Folder, RefreshCw,
+  HardDrive, Image as ImageIcon, Video, FileText, Folder, RefreshCw,
   AlertTriangle, Users, Upload,
-  Clock, Search, Save,
+  Clock, Search, Save, ShieldCheck, DatabaseZap,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useRouter } from "next/navigation";
@@ -56,6 +56,7 @@ interface StorageData {
 
 interface UploadSessionItem {
   id: string;
+  _id?: string;
   fileName?: string;
   status?: string;
   size?: number;
@@ -179,8 +180,9 @@ export default function AdminStoragePage() {
   const [users,       setUsers]       = useState<User[]>([]);
   const [sessions,    setSessions]    = useState<UploadSessionItem[]>([]);
   const [loading,     setLoading]     = useState(true);
-  const [fetchKey,    setFetchKey]    = useState(0);
+  const [loadIssues,  setLoadIssues]  = useState<string[]>([]);
   const [search,      setSearch]      = useState("");
+  const [syncingUser, setSyncingUser] = useState<string | null>(null);
 
   /* Quota modal */
   const [quotaUser,   setQuotaUser]   = useState<User | null>(null);
@@ -191,30 +193,42 @@ export default function AdminStoragePage() {
     if (me && !isAdmin) router.replace("/dashboard");
   }, [me, isAdmin, router]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (silent = false) => {
     if (!isAdmin) return;
-    setLoading(true);
+    if (!silent) setLoading(true);
+    setLoadIssues([]);
     try {
       const [storRes, usersRes, sessRes] = await Promise.allSettled([
         adminApi.storage(),
         usersApi.storageUsage({ limit: 200 }),
         adminApi.uploadSessions({ limit: 20 }),
       ]);
+      const issues: string[] = [];
 
       if (storRes.status === "fulfilled") {
         const d = storRes.value.data;
         setStorageData(d?.storage ?? d?.data ?? d ?? {});
+      } else {
+        issues.push("Storage summary failed");
       }
       if (usersRes.status === "fulfilled") {
         const d = usersRes.value.data?.data ?? usersRes.value.data;
         setUsers(parseUsers(d));
         setStorageData((prev) => ({ ...(prev ?? {}), ...(d?.summary ?? {}) }));
+      } else {
+        issues.push("User storage usage failed");
       }
       if (sessRes.status === "fulfilled") {
         const d = sessRes.value.data;
         const arr = d?.sessions ?? d?.data?.sessions ?? d?.data ?? d ?? [];
-        setSessions(Array.isArray(arr) ? arr.slice(0, 20) : []);
+        setSessions(Array.isArray(arr) ? arr.slice(0, 20).map((session: UploadSessionItem) => ({
+          ...session,
+          id: String(session.id ?? session._id ?? `${session.fileName ?? "session"}:${session.createdAt ?? ""}`),
+        })) : []);
+      } else {
+        issues.push("Upload sessions failed");
       }
+      setLoadIssues(issues);
     } catch (err) {
       handleApiError(err);
     } finally {
@@ -222,7 +236,12 @@ export default function AdminStoragePage() {
     }
   }, [isAdmin]);
 
-  useEffect(() => { load(); }, [load, fetchKey]);
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      void load();
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, [load]);
 
   /* ─── Derived numbers ─── */
   const totalUsed  = storageData?.totalUsedBytes ?? storageData?.summary?.totalSizeBytes ?? storageData?.totalUsed  ?? storageData?.totalStorage ?? users.reduce((s, u) => s + (u.storageUsed  || 0), 0);
@@ -235,19 +254,21 @@ export default function AdminStoragePage() {
     1,
   );
 
-  const cats = [
-    { label: "Images",    value: breakdown.images    || 0, color: "bg-amber-500",   icon: <Image    size={13} className="text-amber-500"  /> },
+  const cats = useMemo(() => [
+    { label: "Images",    value: breakdown.images    || 0, color: "bg-amber-500",   icon: <ImageIcon size={13} className="text-amber-500"  /> },
     { label: "Videos",    value: breakdown.videos    || 0, color: "bg-purple-500",  icon: <Video    size={13} className="text-purple-500" /> },
     { label: "Documents", value: breakdown.documents || 0, color: "bg-blue-500",    icon: <FileText size={13} className="text-blue-500"   /> },
     { label: "PDFs",      value: breakdown.pdfs      || 0, color: "bg-red-500",     icon: <FileText size={13} className="text-red-500"    /> },
     { label: "Sheets",    value: breakdown.spreadsheets || 0, color: "bg-emerald-500", icon: <FileText size={13} className="text-emerald-500" /> },
     { label: "Other",     value: breakdown.other     || 0, color: "bg-slate-400",   icon: <Folder   size={13} className="text-slate-400"  /> },
-  ];
+  ], [breakdown.documents, breakdown.images, breakdown.other, breakdown.pdfs, breakdown.spreadsheets, breakdown.videos]);
 
-  const sortedUsers = [...users].sort((a, b) => (b.storageUsed || 0) - (a.storageUsed || 0));
-  const filteredUsers = search
-    ? sortedUsers.filter((u) => u.name.toLowerCase().includes(search.toLowerCase()) || u.email.toLowerCase().includes(search.toLowerCase()))
-    : sortedUsers;
+  const sortedUsers = useMemo(() => [...users].sort((a, b) => (b.storageUsed || 0) - (a.storageUsed || 0)), [users]);
+  const filteredUsers = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    if (!query) return sortedUsers;
+    return sortedUsers.filter((u) => u.name.toLowerCase().includes(query) || u.email.toLowerCase().includes(query));
+  }, [search, sortedUsers]);
 
   const highUsageUsers = sortedUsers.filter((u) => u.storageQuota > 0 && (u.storageUsed / u.storageQuota) >= 0.8);
 
@@ -266,11 +287,28 @@ export default function AdminStoragePage() {
       await ua.updateQuota(quotaUser.id, bytes);
       showToast.success("Quota updated");
       setQuotaUser(null);
-      load();
+      load(true);
     } catch (err) {
       handleApiError(err);
     } finally {
       setSavingQuota(false);
+    }
+  }
+
+  async function handleSyncStorage(user: User) {
+    setSyncingUser(user.id);
+    try {
+      const res = await usersApi.syncStorage(user.id);
+      const storageUsed = Number(res.data?.data?.storageUsed ?? user.storageUsed);
+      setUsers((current) => current.map((item) => (
+        item.id === user.id ? { ...item, storageUsed } : item
+      )));
+      showToast.success("Storage synced");
+      load(true);
+    } catch (err) {
+      handleApiError(err);
+    } finally {
+      setSyncingUser(null);
     }
   }
 
@@ -297,13 +335,13 @@ export default function AdminStoragePage() {
                 <HardDrive size={18} className="text-violet-500" />
               </div>
               <div>
-                <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Storage</h1>
-                <p className="text-xs text-gray-400 dark:text-gray-500">Platform-wide storage analytics</p>
+                <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Storage Manager</h1>
+                <p className="text-xs text-gray-400 dark:text-gray-500">Live platform storage, quotas, upload sessions, and sync tools</p>
               </div>
             </div>
             <button
               type="button"
-              onClick={() => setFetchKey((k) => k + 1)}
+              onClick={() => load()}
               disabled={loading}
               className="flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3.5 py-2 text-sm font-medium text-gray-600 transition hover:border-orange-300 hover:bg-orange-50 hover:text-orange-600 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-gray-400 dark:hover:border-orange-700 dark:hover:text-orange-400"
             >
@@ -311,6 +349,16 @@ export default function AdminStoragePage() {
               Refresh
             </button>
           </div>
+
+          {!loading && loadIssues.length > 0 && (
+            <div className="flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-800/30 dark:bg-amber-950/20">
+              <AlertTriangle size={16} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
+              <div>
+                <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">Some storage data could not be refreshed</p>
+                <p className="mt-0.5 text-xs text-amber-700 dark:text-amber-400">{loadIssues.join(" · ")}</p>
+              </div>
+            </div>
+          )}
 
           {/* ── High usage alerts ── */}
           {!loading && highUsageUsers.length > 0 && (
@@ -372,6 +420,32 @@ export default function AdminStoragePage() {
                 <p className="mt-1 text-xs text-gray-400">
                   {sessions.filter((s) => s.status === "uploading").length} active now
                 </p>
+              </div>
+            </div>
+          )}
+
+          {!loading && (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              <div className="rounded-2xl border border-gray-200/80 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+                <div className="flex items-center gap-2 text-sm font-semibold text-gray-800 dark:text-gray-200">
+                  <ShieldCheck size={15} className="text-emerald-500" />
+                  Quota Coverage
+                </div>
+                <p className="mt-2 text-xs text-gray-500">{users.filter((u) => u.storageQuota > 0).length} of {users.length} users have quota assigned</p>
+              </div>
+              <div className="rounded-2xl border border-gray-200/80 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+                <div className="flex items-center gap-2 text-sm font-semibold text-gray-800 dark:text-gray-200">
+                  <AlertTriangle size={15} className="text-amber-500" />
+                  High Usage
+                </div>
+                <p className="mt-2 text-xs text-gray-500">{highUsageUsers.length} users at or above 80% quota</p>
+              </div>
+              <div className="rounded-2xl border border-gray-200/80 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+                <div className="flex items-center gap-2 text-sm font-semibold text-gray-800 dark:text-gray-200">
+                  <DatabaseZap size={15} className="text-blue-500" />
+                  Sync Available
+                </div>
+                <p className="mt-2 text-xs text-gray-500">Recalculate user storage from active file records</p>
               </div>
             </div>
           )}
@@ -534,13 +608,23 @@ export default function AdminStoragePage() {
                               </div>
                             </td>
                             <td className="px-5 py-3">
-                              <button
-                                type="button"
-                                onClick={() => { setQuotaUser(u); setQuotaGB(String(Math.round((u.storageQuota || 10_737_418_240) / 1_073_741_824))); }}
-                                className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-2.5 py-1 text-[11px] font-medium text-gray-600 opacity-0 transition hover:border-orange-300 hover:bg-orange-50 hover:text-orange-600 group-hover:opacity-100 dark:border-zinc-700 dark:text-gray-400 dark:hover:border-orange-700 dark:hover:bg-orange-950/20 dark:hover:text-orange-400"
-                              >
-                                <HardDrive size={10} /> Quota
-                              </button>
+                              <div className="flex items-center gap-2 opacity-0 transition group-hover:opacity-100">
+                                <button
+                                  type="button"
+                                  onClick={() => { setQuotaUser(u); setQuotaGB(String(Math.round((u.storageQuota || 10_737_418_240) / 1_073_741_824))); }}
+                                  className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-2.5 py-1 text-[11px] font-medium text-gray-600 transition hover:border-orange-300 hover:bg-orange-50 hover:text-orange-600 dark:border-zinc-700 dark:text-gray-400 dark:hover:border-orange-700 dark:hover:bg-orange-950/20 dark:hover:text-orange-400"
+                                >
+                                  <HardDrive size={10} /> Quota
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={syncingUser === u.id}
+                                  onClick={() => handleSyncStorage(u)}
+                                  className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-2.5 py-1 text-[11px] font-medium text-gray-600 transition hover:border-blue-300 hover:bg-blue-50 hover:text-blue-600 disabled:opacity-60 dark:border-zinc-700 dark:text-gray-400 dark:hover:border-blue-700 dark:hover:bg-blue-950/20 dark:hover:text-blue-400"
+                                >
+                                  <RefreshCw size={10} className={syncingUser === u.id ? "animate-spin" : ""} /> Sync
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         );

@@ -4,19 +4,22 @@ import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import AuthGuard from "@/components/auth/AuthGuard";
-import { adminApi } from "@/lib/api";
 import { formatBytes, formatRelative, formatCompactNumber } from "@/lib/utils";
 import {
   Users, Files, HardDrive, Activity, Upload, Download, RefreshCw,
   Send, Link as LinkIcon, Share2, TrendingUp, ArrowUpRight, Eye,
-  Shield, AlertTriangle, CheckCircle2, Clock, BarChart3,
-  FolderOpen, Zap,
+  Shield, AlertTriangle, CheckCircle2, BarChart3,
+  FolderOpen, Zap, Database, ScrollText, Server,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useRouter } from "next/navigation";
 import { handleApiError } from "@/lib/error-handler";
 import Card from "@/components/ui/Card";
-import { Spinner, Avatar } from "@/components/ui";
+import { Spinner } from "@/components/ui";
+import {
+  loadAdminDashboardData,
+  type AdminDashboardCard,
+} from "@/lib/admin-dashboard";
 
 /* ─── Types ─── */
 interface OverviewData {
@@ -44,6 +47,7 @@ interface ActivityItem {
   action: string;
   type?: string;
   description?: string;
+  message?: string;
   user?: { name?: string; email?: string; role?: string };
   actor?: { name?: string; email?: string; role?: string };
   actorName?: string;
@@ -162,9 +166,14 @@ export default function AdminDashboardPage() {
 
   const role = user?.role?.toLowerCase();
   const isAdmin = role === "admin" || role === "superadmin";
+  const isSuperAdmin = role === "superadmin";
 
   const [overview, setOverview] = useState<OverviewData | null>(null);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
+  const [auditLogs, setAuditLogs] = useState<ActivityItem[]>([]);
+  const [dashboardCards, setDashboardCards] = useState<AdminDashboardCard[]>([]);
+  const [systemHealth, setSystemHealth] = useState<Record<string, unknown>>({});
+  const [database, setDatabase] = useState<Record<string, unknown>>({});
   const [loading, setLoading]   = useState(true);
   const [fetchKey, setFetchKey] = useState(0);
 
@@ -176,20 +185,23 @@ export default function AdminDashboardPage() {
     if (!isAdmin) return;
     setLoading(true);
     try {
-      const [ovRes, actRes] = await Promise.allSettled([
-        adminApi.overview(),
-        adminApi.activity({ limit: 15 }),
-      ]);
-
-      if (ovRes.status === "fulfilled") {
-        const d = ovRes.value.data;
-        setOverview(d?.overview ?? d?.data ?? d ?? {});
-      }
-      if (actRes.status === "fulfilled") {
-        const d = actRes.value.data;
-        const arr = d?.activities ?? d?.data?.activities ?? d?.activity ?? d?.data ?? d ?? [];
-        setActivity(Array.isArray(arr) ? arr.slice(0, 15) : []);
-      }
+      const data = await loadAdminDashboardData();
+      setOverview(data.overview);
+      setActivity(data.recentActivity.slice(0, 15).map((item, index) => ({
+        ...item,
+        id: String(item.id ?? index),
+        action: String(item.action ?? item.type ?? "activity"),
+        createdAt: String(item.createdAt ?? new Date().toISOString()),
+      })));
+      setAuditLogs(data.auditLogs.slice(0, 6).map((item, index) => ({
+        ...item,
+        id: String(item.id ?? index),
+        action: String(item.action ?? item.type ?? "activity"),
+        createdAt: String(item.createdAt ?? new Date().toISOString()),
+      })));
+      setDashboardCards(data.cards);
+      setSystemHealth(data.systemHealth);
+      setDatabase(data.database);
     } catch (err) {
       handleApiError(err);
     } finally {
@@ -197,7 +209,9 @@ export default function AdminDashboardPage() {
     }
   }, [isAdmin]);
 
-  useEffect(() => { load(); }, [load, fetchKey]);
+  useEffect(() => {
+    void Promise.resolve().then(() => load());
+  }, [load, fetchKey]);
 
   /* ─── Stats config ─── */
   const stats: StatCardProps[] = overview ? [
@@ -248,11 +262,21 @@ export default function AdminDashboardPage() {
     },
   ] : [];
 
+  const backendCards = dashboardCards.filter((card) =>
+    ["system", "database"].includes(card.id),
+  );
+
   /* ─── Quick links ─── */
   const quickLinks = [
     { title: "User Management", desc: "Create, edit and control user accounts", href: "/admin/users", icon: <Users size={16} />, count: overview?.totalUsers, badge: "orange" },
     { title: "Storage Reports",  desc: "Platform-wide storage analytics",      href: "/admin/storage", icon: <HardDrive size={16} />, badge: "violet" },
-    { title: "Activity Log",     desc: "Complete audit trail of all actions",  href: "/admin/activity", icon: <Activity size={16} />, badge: "blue" },
+    { title: "Activity Log",     desc: "Complete audit trail of all actions",  href: isSuperAdmin ? "/superadmin/audit-logs" : "/admin/activity", icon: <Activity size={16} />, badge: "blue" },
+    ...(isSuperAdmin
+      ? [
+        { title: "System Health", desc: "Runtime, services and error signals", href: "/superadmin/system", icon: <Server size={16} />, badge: "emerald" },
+        { title: "Database", desc: "Collections, indexes and storage size", href: "/superadmin/database", icon: <Database size={16} />, badge: "cyan" },
+      ]
+      : []),
   ];
 
   /* ─── Platform health tiles ─── */
@@ -264,6 +288,14 @@ export default function AdminDashboardPage() {
   ];
 
   const now = new Date().toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
+  const systemStatus = String(systemHealth.status ?? backendCards.find((card) => card.id === "system")?.value ?? "unknown");
+  const databaseStatus = String(database.status ?? backendCards.find((card) => card.id === "database")?.value ?? "unknown");
+  const statusClass = (status: string) => {
+    const normalized = status.toLowerCase();
+    if (["healthy", "operational"].includes(normalized)) return "text-emerald-600 dark:text-emerald-400";
+    if (["degraded", "warning"].includes(normalized)) return "text-amber-600 dark:text-amber-400";
+    return "text-red-600 dark:text-red-400";
+  };
 
   return (
     <AuthGuard>
@@ -317,6 +349,79 @@ export default function AdminDashboardPage() {
               : stats.map((s, i) => <StatCard key={i} {...s} />)
             }
           </div>
+
+          {isSuperAdmin && (
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+              <Card className="p-5">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                      <Server size={13} /> System Health
+                    </div>
+                    {loading ? (
+                      <div className="h-7 w-28 animate-pulse rounded bg-gray-100 dark:bg-zinc-800" />
+                    ) : (
+                      <p className={`text-2xl font-bold capitalize ${statusClass(systemStatus)}`}>{systemStatus}</p>
+                    )}
+                    {!loading && (
+                      <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                        {Number(systemHealth.cpuUsage ?? 0)}% CPU · {Number(systemHealth.memoryUsage ?? 0)}% memory
+                      </p>
+                    )}
+                  </div>
+                  <Link href="/superadmin/system" className="rounded-xl border border-gray-200 p-2 text-gray-400 transition hover:border-orange-300 hover:text-orange-500 dark:border-zinc-800">
+                    <ArrowUpRight size={15} />
+                  </Link>
+                </div>
+              </Card>
+
+              <Card className="p-5">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                      <Database size={13} /> Database
+                    </div>
+                    {loading ? (
+                      <div className="h-7 w-28 animate-pulse rounded bg-gray-100 dark:bg-zinc-800" />
+                    ) : (
+                      <p className={`text-2xl font-bold capitalize ${statusClass(databaseStatus)}`}>{databaseStatus}</p>
+                    )}
+                    {!loading && (
+                      <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                        {formatCompactNumber(Number(database.collections ?? 0))} collections · {formatBytes(Number(database.totalSize ?? 0))}
+                      </p>
+                    )}
+                  </div>
+                  <Link href="/superadmin/database" className="rounded-xl border border-gray-200 p-2 text-gray-400 transition hover:border-orange-300 hover:text-orange-500 dark:border-zinc-800">
+                    <ArrowUpRight size={15} />
+                  </Link>
+                </div>
+              </Card>
+
+              <Card className="p-5">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                      <ScrollText size={13} /> Audit Logs
+                    </div>
+                    {loading ? (
+                      <div className="h-7 w-28 animate-pulse rounded bg-gray-100 dark:bg-zinc-800" />
+                    ) : (
+                      <p className="text-2xl font-bold text-gray-900 dark:text-white">{formatCompactNumber(auditLogs.length)}</p>
+                    )}
+                    {!loading && (
+                      <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                        Latest privileged system events
+                      </p>
+                    )}
+                  </div>
+                  <Link href="/superadmin/audit-logs" className="rounded-xl border border-gray-200 p-2 text-gray-400 transition hover:border-orange-300 hover:text-orange-500 dark:border-zinc-800">
+                    <ArrowUpRight size={15} />
+                  </Link>
+                </div>
+              </Card>
+            </div>
+          )}
 
           {/* ── Activity + Quick Actions ── */}
           <div className="grid grid-cols-1 gap-6 xl:grid-cols-5">
@@ -395,6 +500,45 @@ export default function AdminDashboardPage() {
                 </Link>
               ))}
 
+              {isSuperAdmin && (
+                <Card className="overflow-hidden">
+                  <div className="flex items-center justify-between border-b border-gray-100 px-5 py-3.5 dark:border-zinc-800">
+                    <div className="flex items-center gap-2">
+                      <ScrollText size={14} className="text-orange-500" />
+                      <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Audit Preview</h3>
+                    </div>
+                    <Link href="/superadmin/audit-logs" className="text-xs font-medium text-orange-500 hover:underline">
+                      View all
+                    </Link>
+                  </div>
+                  <div className="divide-y divide-gray-50 dark:divide-zinc-800/60">
+                    {loading ? (
+                      Array.from({ length: 4 }).map((_, i) => (
+                        <div key={i} className="px-5 py-3">
+                          <div className="h-3 w-4/5 animate-pulse rounded bg-gray-100 dark:bg-zinc-800" />
+                        </div>
+                      ))
+                    ) : auditLogs.length === 0 ? (
+                      <div className="px-5 py-8 text-center text-xs text-gray-400">No audit logs yet</div>
+                    ) : auditLogs.slice(0, 4).map((item, idx) => (
+                      <div key={item.id ?? idx} className="px-5 py-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="truncate text-xs font-semibold text-gray-900 dark:text-white">
+                              {item.message ?? item.description ?? item.action ?? item.type ?? "Audit event"}
+                            </p>
+                            <p className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400">
+                              {actorName(item)} {resourceLabel(item) ? `· ${resourceLabel(item)}` : ""}
+                            </p>
+                          </div>
+                          <span className="shrink-0 text-[11px] text-gray-400">{formatRelative(item.createdAt)}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+              )}
+
               {/* Platform summary */}
               <Card className="overflow-hidden">
                 <div className="border-b border-gray-100 px-5 py-3.5 dark:border-zinc-800">
@@ -453,7 +597,7 @@ export default function AdminDashboardPage() {
               {
                 title: "Audit Activity Log",
                 desc: "Full audit trail of uploads, downloads, transfers and security events",
-                href: "/admin/activity",
+                href: isSuperAdmin ? "/superadmin/audit-logs" : "/admin/activity",
                 icon: <CheckCircle2 size={20} />,
                 gradient: "from-emerald-500/10 to-green-500/5",
                 iconColor: "text-emerald-500",

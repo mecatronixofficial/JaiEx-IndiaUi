@@ -15,6 +15,14 @@ import AuthGuard from "@/components/auth/AuthGuard";
 import { Spinner } from "@/components/ui";
 import Button from "@/components/ui/Button";
 import { formatBytes, formatRelative } from "@/lib/utils";
+import {
+  getTransferFileCount,
+  getTransferLink,
+  getTransferSenderEmail,
+  getTransferSenderLabel,
+  getTransfersFromResponse,
+  getTransferTotalSize,
+} from "@/lib/transfers";
 import { transfersApi, linksApi } from "@/lib/api";
 import { showToast } from "@/lib/toast";
 import { Transfer } from "@/types";
@@ -166,9 +174,7 @@ export default function TransfersPage() {
       } else {
         res = await transfersApi.list({ limit: 100 });
       }
-      const inner = res.data?.data ?? res.data;
-      const data  = inner?.transfers ?? (Array.isArray(inner) ? inner : []);
-      const list: Transfer[] = Array.isArray(data) ? data : [];
+      const list = getTransfersFromResponse(res.data);
       setTransfers(list);
       /* Seed local starred set from server-side isStarred so icons render correctly on first paint */
       setStarredIds(new Set(list.filter((t) => t.isStarred).map((t) => t.id)));
@@ -191,6 +197,8 @@ export default function TransfersPage() {
       list = list.filter(
         (t) =>
           t.title?.toLowerCase().includes(q) ||
+          t.sender?.name?.toLowerCase().includes(q) ||
+          t.sender?.email?.toLowerCase().includes(q) ||
           t.recipients?.some((r) => r.toLowerCase().includes(q)) ||
           t.files?.some((f) => f.name.toLowerCase().includes(q)),
       );
@@ -208,14 +216,12 @@ export default function TransfersPage() {
 
   /* ── Helpers ── */
   function getLink(t: Transfer): string {
-    return t.link?.url ?? (t.link?.shortCode
-      ? `${window.location.origin}/t/${t.link.shortCode}`
-      : `${window.location.origin}/t/${t.id}`);
+    return getTransferLink(t);
   }
 
   const handleCopy = (t: Transfer) => {
     const url = getLink(t);
-    navigator.clipboard.writeText(url).catch(() => null);
+    navigator.clipboard?.writeText(url).catch(() => showToast.error("Unable to copy link"));
     setCopiedId(t.id);
     setTimeout(() => setCopiedId(null), 2000);
     showToast.success("Link copied to clipboard");
@@ -490,7 +496,7 @@ export default function TransfersPage() {
                   <table className="w-full min-w-175">
                     <thead className="border-b border-gray-100 bg-gray-50/80 dark:border-zinc-800 dark:bg-zinc-800/30">
                       <tr>
-                        {["Transfer", "Method", "Recipients", "Status", "Views", "Downloads", "Expires", "Actions"].map((h) => (
+                        {["Transfer", "Method", viewTab === "received" ? "Sender" : "Recipients", "Status", "Views", "Downloads", "Expires", "Actions"].map((h) => (
                           <th key={h} className={`px-5 py-3 text-[10px] font-bold uppercase tracking-wider text-(--text-muted) ${h === "Actions" || h === "Views" || h === "Downloads" || h === "Status" ? "text-center" : "text-left"}`}>
                             {h}
                           </th>
@@ -504,6 +510,8 @@ export default function TransfersPage() {
                           const isStarred  = starredIds.has(t.id);
                           const isExpired  = t.expiresAt ? new Date(t.expiresAt) < new Date() : false;
                           const isActing   = actionLoading === t.id;
+                          const fileCount = getTransferFileCount(t);
+                          const totalSize = getTransferTotalSize(t);
 
                           return (
                             <tr key={t.id} className="group transition-colors hover:bg-orange-50/30 dark:hover:bg-orange-500/5">
@@ -523,7 +531,7 @@ export default function TransfersPage() {
                                       {t.title || `Transfer ${t.id.slice(-6)}`}
                                     </Link>
                                     <p className="mt-0.5 flex items-center gap-1.5 text-[11px] text-(--text-muted)">
-                                      {t.fileCount} file{t.fileCount !== 1 ? "s" : ""} · {formatBytes(t.totalSize)}
+                                      {fileCount} file{fileCount !== 1 ? "s" : ""} · {formatBytes(totalSize)}
                                       {t.hasPassword && <Lock size={9} className="text-orange-400" />}
                                       {isStarred && <Star size={9} className="fill-amber-400 text-amber-400" />}
                                     </p>
@@ -538,7 +546,18 @@ export default function TransfersPage() {
 
                               {/* Recipients */}
                               <td className="px-5 py-3.5">
-                                {t.recipients?.length > 0 ? (
+                                {viewTab === "received" ? (
+                                  <div className="max-w-[160px]">
+                                    <p className="truncate text-xs font-semibold text-(--text)">
+                                      {getTransferSenderLabel(t)}
+                                    </p>
+                                    {getTransferSenderEmail(t) && (
+                                      <p className="truncate text-[11px] text-(--text-muted)">
+                                        {getTransferSenderEmail(t)}
+                                      </p>
+                                    )}
+                                  </div>
+                                ) : t.recipients?.length > 0 ? (
                                   <div className="space-y-0.5">
                                     {t.recipients.slice(0, 2).map((r) => (
                                       <p key={r} className="flex items-center gap-1 truncate text-xs text-(--text-muted) max-w-[140px]">
@@ -680,6 +699,8 @@ export default function TransfersPage() {
                       ))
                     : filtered.map((t) => {
                         const isStarred = starredIds.has(t.id);
+                        const fileCount = getTransferFileCount(t);
+                        const totalSize = getTransferTotalSize(t);
                         return (
                           <div key={t.id} className="p-4 transition-colors hover:bg-gray-50/50 dark:hover:bg-zinc-800/30">
                             <div className="mb-3 flex items-start justify-between gap-2">
@@ -689,7 +710,7 @@ export default function TransfersPage() {
                                   {t.title || `Transfer ${t.id.slice(-6)}`}
                                 </Link>
                                 <p className="mt-0.5 text-xs text-(--text-muted)">
-                                  {t.fileCount} file{t.fileCount !== 1 ? "s" : ""} · {formatBytes(t.totalSize)} · {formatRelative(t.createdAt)}
+                                  {fileCount} file{fileCount !== 1 ? "s" : ""} · {formatBytes(totalSize)} · {formatRelative(t.createdAt)}
                                 </p>
                               </div>
                               <div className="flex shrink-0 items-center gap-1.5">
@@ -702,6 +723,9 @@ export default function TransfersPage() {
                               <span className="flex items-center gap-1"><Download size={11} className="text-blue-400" />{t.downloads ?? 0}</span>
                               {t.recipients?.length > 0 && (
                                 <span className="flex items-center gap-1"><Users size={11} />{t.recipients.length} recipient{t.recipients.length !== 1 ? "s" : ""}</span>
+                              )}
+                              {viewTab === "received" && (
+                                <span className="flex items-center gap-1"><Users size={11} />{getTransferSenderLabel(t)}</span>
                               )}
                               {t.hasPassword && <span className="flex items-center gap-1"><Lock size={11} className="text-orange-400" />Password</span>}
                               {isStarred && <span className="flex items-center gap-1"><Star size={11} className="fill-amber-400 text-amber-400" />Starred</span>}
