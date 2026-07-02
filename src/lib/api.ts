@@ -51,8 +51,16 @@ type MultipartPartUrlData = {
 };
 
 function unwrapData<T = Record<string, unknown>>(payload: unknown): T {
-  const root = payload as { data?: unknown } | undefined;
-  return ((root?.data ?? payload ?? {}) as T);
+  let current = payload;
+
+  for (let depth = 0; depth < 5; depth += 1) {
+    if (!current || typeof current !== "object" || !("data" in current)) break;
+    const next = (current as { data?: unknown }).data;
+    if (next === undefined || next === null) break;
+    current = next;
+  }
+
+  return ((current ?? {}) as T);
 }
 
 function readHeader(headers: AxiosResponse["headers"], name: string): string | undefined {
@@ -76,7 +84,12 @@ function getPartUploadErrorMessage(error: unknown, partNumber: number): string {
   if (axios.isAxiosError(error) && !error.response) {
     const isOffline = typeof navigator !== "undefined" && !navigator.onLine;
     if (isOffline) return "You appear to be offline. Check your connection.";
-    return `Network error while uploading part ${partNumber}. Check storage CORS and the presigned upload URL.`;
+    const detail = error.code || error.message;
+    return [
+      `Network error while uploading part ${partNumber}.`,
+      detail ? `Browser reported: ${detail}.` : "",
+      "Check storage CORS and the presigned upload URL.",
+    ].filter(Boolean).join(" ");
   }
 
   if (axios.isAxiosError(error) && error.response?.status) {
@@ -504,9 +517,8 @@ export const uploadApi = {
     signal?: AbortSignal,
   ): Promise<UploadApiResponse> => {
     const contentType = resolveUploadContentType(file);
-    const partSize = UPLOAD_LIMITS.PART_SIZE;
-    const partCount = Math.ceil(file.size / partSize);
-    const progressByPart = new Array(partCount).fill(0) as number[];
+    const requestedPartSize = UPLOAD_LIMITS.PART_SIZE;
+    let progressByPart: number[] = [];
     let uploadId = "";
     let key = "";
 
@@ -523,18 +535,25 @@ export const uploadApi = {
         contentType,
         size: file.size,
         folderId,
-        partSize,
+        partSize: requestedPartSize,
       });
       const initiateData = unwrapData<MultipartInitiateData>(initiateRes.data);
       uploadId = initiateData.uploadId ?? "";
       key = initiateData.key ?? "";
-      const resolvedPartSize = initiateData.partSize ?? partSize;
+      const resolvedPartSize = initiateData.partSize ?? requestedPartSize;
 
       if (!uploadId || !key) {
         throw new Error("Could not start multipart upload");
       }
 
-      const partTasks = Array.from({ length: partCount }, (_, index) => async () => {
+      if (!Number.isFinite(resolvedPartSize) || resolvedPartSize <= 0) {
+        throw new Error("Could not start multipart upload with a valid part size");
+      }
+
+      const resolvedPartCount = Math.ceil(file.size / resolvedPartSize);
+      progressByPart = new Array(resolvedPartCount).fill(0) as number[];
+
+      const partTasks = Array.from({ length: resolvedPartCount }, (_, index) => async () => {
         const partNumber = index + 1;
         const start = index * resolvedPartSize;
         const end = Math.min(start + resolvedPartSize, file.size);
@@ -555,7 +574,6 @@ export const uploadApi = {
               timeout: PART_UPLOAD_TIMEOUT_MS,
               maxBodyLength: Infinity,
               maxContentLength: Infinity,
-              headers: { "Content-Type": contentType },
               onUploadProgress: (progressEvent: AxiosProgressEvent) => {
                 updateProgress(index, progressEvent.loaded);
               },
@@ -580,7 +598,7 @@ export const uploadApi = {
         throw new Error(`Upload part ${partNumber} failed`);
       });
 
-      const parts: { ETag: string; PartNumber: number }[] = new Array(partCount);
+      const parts: { ETag: string; PartNumber: number }[] = new Array(resolvedPartCount);
       let next = 0;
       async function worker() {
         while (next < partTasks.length) {
