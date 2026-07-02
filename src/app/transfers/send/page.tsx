@@ -915,7 +915,7 @@ export default function SendPage() {
                     </span>
                     <span className="h-3 w-px bg-gray-200 dark:bg-zinc-700" />
                     <span className="flex items-center gap-1 text-[11px] text-(--text-muted)">
-                      <Zap size={10} className="text-amber-500" /> Up to 10 GB
+                      <Zap size={10} className="text-amber-500" /> Up to {formatBytes(UPLOAD_LIMITS.MAX_FILE_BYTES)}
                     </span>
                   </div>
                 </div>
@@ -1238,7 +1238,7 @@ export default function SendPage() {
                               {isDragging ? "Drop files or folders here" : "Drag & drop files or folders"}
                             </p>
                             <p className="mt-1 text-sm text-(--text-muted)">
-                              Any file type supported · Up to 10 GB per file
+                              Any file type supported · Up to {formatBytes(UPLOAD_LIMITS.MAX_FILE_BYTES)} per file
                             </p>
                           </div>
                           <div className="flex items-center gap-2">

@@ -23,7 +23,7 @@ export type StorageTier = keyof typeof STORAGE_TIERS;
 /** Upload limits. */
 export const UPLOAD_LIMITS = {
   /** Max size per uploaded file. */
-  MAX_FILE_BYTES:        10 * 1024 ** 3,   // 10 GB
+  MAX_FILE_BYTES:       100 * 1024 ** 3,   // 100 GB
   /** Max size per file for a simple (presigned) upload. */
   SIMPLE_MAX_BYTES:    50 * 1024 * 1024,   // 50 MB
   /** Files larger than this trigger multipart upload. */
