@@ -80,7 +80,7 @@ const PERMISSIONS: Permission[] = [
   { key: "storage_manage", label: "Manage storage", description: "Review storage usage, upload sessions, and user quotas.", group: "workspace", grants: { superadmin: true, admin: true, user: false } },
   { key: "transfer_send", label: "Send transfers", description: "Create file transfers for link, email, QR, and private delivery.", group: "sharing", grants: { superadmin: true, admin: true, user: true } },
   { key: "share_links", label: "Create share links", description: "Create, renew, disable, and delete own share links.", group: "sharing", grants: { superadmin: true, admin: true, user: true } },
-  { key: "sharing_admin", label: "Manage all links and transfers", description: "View and control links and transfers across users.", group: "sharing", grants: { superadmin: true, admin: true, user: false } },
+  { key: "sharing_admin", label: "Manage all platform links", description: "View and control shared links, QR shares, and email shares across users.", group: "sharing", grants: { superadmin: true, admin: false, user: false } },
   { key: "analytics", label: "View analytics and reports", description: "Open operational analytics, reports, and platform summaries.", group: "administration", grants: { superadmin: true, admin: true, user: false } },
   { key: "users_manage", label: "Manage users", description: "Create users, update profiles, activate/deactivate accounts, and set quotas.", group: "administration", grants: { superadmin: true, admin: true, user: false } },
   { key: "roles_view", label: "View role policy", description: "Review fixed role permissions and access boundaries.", group: "administration", grants: { superadmin: true, admin: true, user: false } },

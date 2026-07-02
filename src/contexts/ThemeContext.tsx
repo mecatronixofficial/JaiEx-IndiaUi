@@ -28,19 +28,25 @@ export function useTheme(): ThemeContextType {
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setThemeState] = useState<Theme>('light');
+  const [theme, setThemeState] = useState<Theme>(() => {
+    if (typeof window === 'undefined') return 'light';
 
-  // Initial load: stored preference → system preference (with live system change tracking)
+    const stored = localStorage.getItem('theme') as Theme | null;
+    if (stored === 'light' || stored === 'dark') return stored;
+
+    return window.matchMedia('(prefers-color-scheme: dark)').matches
+      ? 'dark'
+      : 'light';
+  });
+
+  // Track system changes only when the user has not saved an explicit preference.
   useEffect(() => {
     const stored = localStorage.getItem('theme') as Theme | null;
     if (stored === 'light' || stored === 'dark') {
-      setThemeState(stored);
       return;
     }
 
     const mq = window.matchMedia('(prefers-color-scheme: dark)');
-    setThemeState(mq.matches ? 'dark' : 'light');
-
     const handler = (e: MediaQueryListEvent) =>
       setThemeState(e.matches ? 'dark' : 'light');
     mq.addEventListener('change', handler);
@@ -50,6 +56,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // Apply theme class to <html> and persist to localStorage
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
+    document.documentElement.style.colorScheme = theme;
     localStorage.setItem('theme', theme);
   }, [theme]);
 

@@ -310,7 +310,7 @@ export default function ProfilePage() {
                       : "All changes saved"}
                   </p>
 
-                  <div className="flex gap-3">
+                  <div className="flex flex-col gap-3">
                     <Button
                       type="button"
                       variant="secondary"

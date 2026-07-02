@@ -47,9 +47,11 @@ const AuthContext = createContext<AuthContextType | null>(null);
 
 function normalizeAuthUser(user: User | null): User | null {
   if (!user) return null;
+  const rawUser = user as User & { _id?: string };
 
   return {
     ...user,
+    id: user.id ?? rawUser._id ?? "",
     storageUsed: user.storage?.usedBytes ?? user.storageUsed ?? 0,
     storageQuota: user.storage?.quotaBytes ?? user.storageQuota ?? 0,
   };

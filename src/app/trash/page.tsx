@@ -945,7 +945,7 @@ export default function TrashPage() {
                   (<span className="font-semibold">{formatBytes(totalSize)}</span>) will be permanently deleted.
                 </p>
                 <p className="mb-5 text-xs font-semibold text-red-500">This action cannot be undone.</p>
-                <div className="flex gap-3">
+                <div className="flex flex-col gap-3">
                   <Button variant="secondary" fullWidth rounded="xl" onClick={() => setShowEmptyConfirm(false)}>
                     Cancel
                   </Button>
@@ -985,7 +985,7 @@ export default function TrashPage() {
                   )}
                 </p>
                 <p className="mb-5 text-xs font-semibold text-red-500">This action cannot be undone.</p>
-                <div className="flex gap-3">
+                <div className="flex flex-col gap-3">
                   <Button variant="secondary" fullWidth rounded="xl" onClick={() => setShowDeleteConfirm(false)}>
                     Cancel
                   </Button>

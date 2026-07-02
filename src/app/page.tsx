@@ -253,14 +253,14 @@ function DashboardPreview() {
 
   return (
     <div className="relative w-full max-w-sm">
-      <div className="relative overflow-hidden rounded-3xl border border-gray-200 bg-white shadow-2xl shadow-gray-300/40">
+      <div className="relative overflow-hidden rounded-3xl border border-gray-200 bg-white shadow-2xl shadow-gray-300/40 dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-none">
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-gray-100 bg-gray-50/80 px-4 py-3">
+        <div className="flex items-center justify-between border-b border-gray-100 bg-gray-50/80 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-950/60">
           <div className="flex items-center gap-2.5">
             <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-linear-to-br from-orange-400 to-orange-600 shadow-sm">
               <LogoMark size={13} />
             </div>
-            <span className="text-xs font-bold text-gray-700">Jai Export</span>
+            <span className="text-xs font-bold text-gray-700 dark:text-gray-200">Jai Export</span>
           </div>
           <div className="flex items-center gap-1.5">
             <span className="dot-live h-2 w-2 rounded-full bg-emerald-400" />
@@ -268,24 +268,24 @@ function DashboardPreview() {
           </div>
         </div>
 
-        <div className="grid grid-cols-3 gap-2 border-b border-gray-100 bg-white px-4 py-3">
+        <div className="grid grid-cols-3 gap-2 border-b border-gray-100 bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900">
           {[
             { label: "Used", value: "38%", icon: <HardDrive size={10} /> },
             { label: "Active", value: "126", icon: <Link2 size={10} /> },
             { label: "Audit", value: "Live", icon: <Clock3 size={10} /> },
           ].map((item) => (
-            <div key={item.label} className="rounded-xl bg-gray-50 px-2 py-2">
+            <div key={item.label} className="rounded-xl bg-gray-50 px-2 py-2 dark:bg-zinc-800/70">
               <div className="mb-1 flex items-center gap-1 text-[9px] font-semibold text-gray-400">
                 {item.icon}
                 {item.label}
               </div>
-              <p className="text-xs font-extrabold text-gray-800">{item.value}</p>
+              <p className="text-xs font-extrabold text-gray-800 dark:text-gray-100">{item.value}</p>
             </div>
           ))}
         </div>
 
         {/* File rows */}
-        <div className="divide-y divide-gray-50/80 px-4 py-1">
+        <div className="divide-y divide-gray-50/80 px-4 py-1 dark:divide-zinc-800/70">
           {rows.map((row) => {
             const cfg = typeConfig[row.type];
             return (
@@ -294,7 +294,7 @@ function DashboardPreview() {
                   {cfg.icon}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-xs font-semibold text-gray-800">{row.name}</p>
+                  <p className="truncate text-xs font-semibold text-gray-800 dark:text-gray-100">{row.name}</p>
                   <p className="text-[10px] text-gray-400">{row.size}</p>
                 </div>
                 <span className="shrink-0 text-[10px] text-gray-300">{row.time}</span>
@@ -304,7 +304,7 @@ function DashboardPreview() {
         </div>
 
         {/* Footer strip */}
-        <div className="flex items-center justify-between border-t border-gray-100 bg-gray-50/80 px-4 py-2.5">
+        <div className="flex items-center justify-between border-t border-gray-100 bg-gray-50/80 px-4 py-2.5 dark:border-zinc-800 dark:bg-zinc-950/60">
           <span className="text-[10px] font-semibold text-gray-400">Link · QR · Email · all encrypted</span>
           <span className="flex items-center gap-1 text-[10px] font-semibold text-emerald-500">
             <CheckCircle2 size={10} /> Secure
@@ -337,16 +337,16 @@ export default function Home() {
   const closeMenu = () => setMobileOpen(false);
 
   return (
-    <div className="min-h-screen overflow-x-hidden bg-white font-sans text-gray-900">
+    <div className="min-h-screen overflow-x-hidden bg-white font-sans text-gray-900 dark:bg-zinc-950 dark:text-white">
 
       {/* ══════════════════════════════════════════
           NAVBAR — white, clean, orange accents
       ══════════════════════════════════════════ */}
       <header
-        className={`sticky top-0 z-50 bg-white transition-all duration-300 ${
+        className={`sticky top-0 z-50 bg-white transition-all duration-300 dark:bg-zinc-950 ${
           scrolled
-            ? "border-b border-gray-100 shadow-[0_2px_24px_rgba(0,0,0,0.07)]"
-            : "border-b border-gray-100"
+            ? "border-b border-gray-100 shadow-[0_2px_24px_rgba(0,0,0,0.07)] dark:border-zinc-800 dark:shadow-none"
+            : "border-b border-gray-100 dark:border-zinc-800"
         }`}
       >
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-5 md:px-0">
@@ -360,7 +360,7 @@ export default function Home() {
               </div>
             </div>
             <div>
-              <div className="text-sm font-extrabold leading-tight tracking-tight text-gray-900">
+              <div className="text-sm font-extrabold leading-tight tracking-tight text-gray-900 dark:text-white">
                 Jai Export
               </div>
               <div className="text-[9px] font-semibold uppercase leading-tight tracking-[0.18em] text-orange-500">
@@ -375,7 +375,7 @@ export default function Home() {
               <a
                 key={link.href}
                 href={link.href}
-                className="nav-link rounded-lg px-4 py-2 text-sm font-medium text-gray-500 transition-colors hover:bg-orange-50 hover:text-orange-600"
+                className="nav-link rounded-lg px-4 py-2 text-sm font-medium text-gray-500 transition-colors hover:bg-orange-50 hover:text-orange-600 dark:text-gray-400 dark:hover:bg-orange-500/10 dark:hover:text-orange-400"
               >
                 {link.label}
               </a>
@@ -399,7 +399,7 @@ export default function Home() {
             <button
               type="button"
               onClick={() => setMobileOpen((o) => !o)}
-              className="flex h-9 w-9 items-center justify-center rounded-xl text-gray-500 transition-colors hover:bg-orange-50 hover:text-orange-500 md:hidden"
+              className="flex h-9 w-9 items-center justify-center rounded-xl text-gray-500 transition-colors hover:bg-orange-50 hover:text-orange-500 dark:text-gray-400 dark:hover:bg-zinc-800 md:hidden"
               aria-label={mobileOpen ? "Close menu" : "Open menu"}
               aria-expanded={mobileOpen ? "true" : "false"}
               aria-controls="mobile-nav"
@@ -416,13 +416,13 @@ export default function Home() {
             mobileOpen ? "max-h-72 opacity-100" : "max-h-0 opacity-0"
           }`}
         >
-          <nav className="flex flex-col gap-1 border-t border-gray-100 bg-white px-5 pb-5 pt-2">
+          <nav className="flex flex-col gap-1 border-t border-gray-100 bg-white px-5 pb-5 pt-2 dark:border-zinc-800 dark:bg-zinc-950">
             {NAV_LINKS.map((link) => (
               <a
                 key={link.href}
                 href={link.href}
                 onClick={closeMenu}
-                className="flex items-center justify-between rounded-xl px-4 py-3 text-sm font-medium text-gray-600 transition-colors hover:bg-orange-50 hover:text-orange-600"
+                className="flex items-center justify-between rounded-xl px-4 py-3 text-sm font-medium text-gray-600 transition-colors hover:bg-orange-50 hover:text-orange-600 dark:text-gray-300 dark:hover:bg-orange-500/10 dark:hover:text-orange-400"
               >
                 {link.label}
                 <ChevronRight size={14} className="text-gray-300" />
@@ -448,14 +448,14 @@ export default function Home() {
               </span>
             </div>
 
-            <h1 className="hero-item text-[clamp(2.6rem,6vw,4.5rem)] font-black leading-[1.06] tracking-tight text-gray-900">
+            <h1 className="hero-item text-[clamp(2.6rem,6vw,4.5rem)] font-black leading-[1.06] tracking-tight text-gray-900 dark:text-white">
               Send, store, and share
               <br />
               files{" "}
               <span className="shimmer-text">securely.</span>
             </h1>
 
-            <p className="hero-item mt-6 max-w-md text-lg leading-relaxed text-gray-500">
+            <p className="hero-item mt-6 max-w-md text-lg leading-relaxed text-gray-500 dark:text-gray-400">
               A modern workspace for your team — encrypted at rest, audited end to end, and built
               for scale.
             </p>
@@ -499,11 +499,11 @@ export default function Home() {
       {/* ══════════════════════════════════════════
           STATS — white, orange + green values
       ══════════════════════════════════════════ */}
-      <section className="border-y border-gray-100 bg-white">
+      <section className="border-y border-gray-100 bg-white dark:border-zinc-800 dark:bg-zinc-950">
         <div
           ref={statsRef}
           data-reveal
-          className="mx-auto grid max-w-4xl grid-cols-2 divide-x divide-gray-100 md:grid-cols-4"
+          className="mx-auto grid max-w-4xl grid-cols-2 divide-x divide-gray-100 dark:divide-zinc-800 md:grid-cols-4"
         >
           {STATS.map(({ value, label, color }) => (
             <div key={label} className="flex flex-col items-center px-6 py-8 text-center">
@@ -517,18 +517,18 @@ export default function Home() {
       {/* ══════════════════════════════════════════
           PROJECT MODULES
       ══════════════════════════════════════════ */}
-      <section className="bg-gray-50 px-6 py-24 md:py-28">
+      <section className="bg-gray-50 px-6 py-24 dark:bg-zinc-900/50 md:py-28">
         <div ref={modulesRef} data-reveal className="mx-auto max-w-6xl">
           <div className="mb-12 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
             <div>
               <span className="mb-4 block text-xs font-extrabold uppercase tracking-[0.2em] text-orange-500">
                 Project modules
               </span>
-              <h2 className="max-w-2xl text-4xl font-extrabold leading-tight text-gray-900 md:text-5xl">
+              <h2 className="max-w-2xl text-4xl font-extrabold leading-tight text-gray-900 dark:text-white md:text-5xl">
                 Built around the data your team already manages
               </h2>
             </div>
-            <p className="max-w-sm text-sm leading-relaxed text-gray-500">
+            <p className="max-w-sm text-sm leading-relaxed text-gray-500 dark:text-gray-400">
               The dashboard is organised around storage, transfers, sharing, and administrative insight, with each area tied back to real project workflows.
             </p>
           </div>
@@ -538,14 +538,14 @@ export default function Home() {
               <Link
                 key={module.title}
                 href={module.href}
-                className="group flex min-h-64 flex-col rounded-2xl border border-gray-200 bg-white p-6 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-orange-200 hover:shadow-lg hover:shadow-orange-500/8"
+                className="group flex min-h-64 flex-col rounded-2xl border border-gray-200 bg-white p-6 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-orange-200 hover:shadow-lg hover:shadow-orange-500/8 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-orange-700"
               >
                 <div className="mb-5 flex h-12 w-12 items-center justify-center rounded-xl bg-orange-50 text-orange-500 transition-transform duration-300 group-hover:scale-105">
                   <module.icon size={21} />
                 </div>
-                <h3 className="text-base font-extrabold text-gray-900">{module.title}</h3>
-                <p className="mt-2 flex-1 text-sm leading-relaxed text-gray-500">{module.desc}</p>
-                <div className="mt-5 flex items-center justify-between border-t border-gray-100 pt-4">
+                <h3 className="text-base font-extrabold text-gray-900 dark:text-white">{module.title}</h3>
+                <p className="mt-2 flex-1 text-sm leading-relaxed text-gray-500 dark:text-gray-400">{module.desc}</p>
+                <div className="mt-5 flex items-center justify-between border-t border-gray-100 pt-4 dark:border-zinc-800">
                   <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400">{module.meta}</span>
                   <ArrowRight size={14} className="text-orange-400 transition-transform group-hover:translate-x-1" />
                 </div>
@@ -559,16 +559,16 @@ export default function Home() {
       {/* ══════════════════════════════════════════
           FEATURES — white bg, orange icon boxes
       ══════════════════════════════════════════ */}
-      <section id="features" className="bg-white px-6 py-24 md:py-32">
+      <section id="features" className="bg-white px-6 py-24 dark:bg-zinc-950 md:py-32">
         <div className="mx-auto max-w-6xl">
           <div ref={featuresRef} data-reveal className="mb-16 text-center">
             <span className="mb-4 block text-xs font-extrabold uppercase tracking-[0.2em] text-orange-500">
               Features
             </span>
-            <h2 className="text-4xl font-extrabold leading-tight text-gray-900 md:text-5xl">
+            <h2 className="text-4xl font-extrabold leading-tight text-gray-900 dark:text-white md:text-5xl">
               Everything you need to manage files
             </h2>
-            <p className="mx-auto mt-4 max-w-md text-base leading-relaxed text-gray-500">
+            <p className="mx-auto mt-4 max-w-md text-base leading-relaxed text-gray-500 dark:text-gray-400">
               A focused set of tools, designed for teams that take security and clarity seriously.
             </p>
           </div>
@@ -581,15 +581,15 @@ export default function Home() {
             {FEATURES.map((f, i) => (
               <div
                 key={f.title}
-                className="feature-card group cursor-default rounded-2xl border-2 border-gray-100 bg-white p-7 hover:border-orange-200"
+                className="feature-card group cursor-default rounded-2xl border-2 border-gray-100 bg-white p-7 hover:border-orange-200 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-orange-700"
               >
                 <div className={`feat-icon mb-5 flex h-12 w-12 items-center justify-center rounded-xl shadow-md transition-transform duration-300 group-hover:scale-110 ${
                   i % 3 === 2 ? "bg-emerald-500 shadow-emerald-500/25" : "bg-orange-500 shadow-orange-500/25"
                 }`}>
                   <f.icon size={20} className="text-white" />
                 </div>
-                <h3 className="mb-2 font-bold text-gray-900">{f.title}</h3>
-                <p className="text-sm leading-relaxed text-gray-500">{f.desc}</p>
+                <h3 className="mb-2 font-bold text-gray-900 dark:text-white">{f.title}</h3>
+                <p className="text-sm leading-relaxed text-gray-500 dark:text-gray-400">{f.desc}</p>
               </div>
             ))}
           </div>
@@ -599,16 +599,16 @@ export default function Home() {
       {/* ══════════════════════════════════════════
           SHARE MODES
       ══════════════════════════════════════════ */}
-      <section className="bg-white px-6 py-24 md:py-28">
+      <section className="bg-white px-6 py-24 dark:bg-zinc-950 md:py-28">
         <div ref={shareModesRef} data-reveal className="mx-auto max-w-6xl">
           <div className="mb-12 text-center">
             <span className="mb-4 block text-xs font-extrabold uppercase tracking-[0.2em] text-orange-500">
               Share modes
             </span>
-            <h2 className="text-4xl font-extrabold leading-tight text-gray-900 md:text-5xl">
+            <h2 className="text-4xl font-extrabold leading-tight text-gray-900 dark:text-white md:text-5xl">
               Choose the right delivery method
             </h2>
-            <p className="mx-auto mt-4 max-w-lg text-base leading-relaxed text-gray-500">
+            <p className="mx-auto mt-4 max-w-lg text-base leading-relaxed text-gray-500 dark:text-gray-400">
               Links, QR codes, and email delivery all share the same access controls, expiry rules, and activity tracking.
             </p>
           </div>
@@ -618,13 +618,13 @@ export default function Home() {
               <Link
                 key={mode.title}
                 href={mode.href}
-                className="group rounded-2xl border-2 border-gray-100 bg-white p-7 transition-all duration-300 hover:-translate-y-1 hover:border-orange-200 hover:shadow-lg hover:shadow-orange-500/8"
+                className="group rounded-2xl border-2 border-gray-100 bg-white p-7 transition-all duration-300 hover:-translate-y-1 hover:border-orange-200 hover:shadow-lg hover:shadow-orange-500/8 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-orange-700"
               >
                 <div className={`mb-5 flex h-13 w-13 items-center justify-center rounded-2xl border ${mode.accent}`}>
                   <mode.icon size={22} />
                 </div>
-                <h3 className="text-lg font-extrabold text-gray-900">{mode.title}</h3>
-                <p className="mt-2 text-sm leading-relaxed text-gray-500">{mode.desc}</p>
+                <h3 className="text-lg font-extrabold text-gray-900 dark:text-white">{mode.title}</h3>
+                <p className="mt-2 text-sm leading-relaxed text-gray-500 dark:text-gray-400">{mode.desc}</p>
                 <span className="mt-6 inline-flex items-center gap-1.5 text-xs font-bold text-orange-500">
                   View mode <ArrowRight size={12} className="transition-transform group-hover:translate-x-1" />
                 </span>
@@ -638,17 +638,17 @@ export default function Home() {
       {/* ══════════════════════════════════════════
           HOW IT WORKS — gray-50, white step cards
       ══════════════════════════════════════════ */}
-      <section id="how-it-works" className="bg-gray-50 px-6 py-24 md:py-32">
+      <section id="how-it-works" className="bg-gray-50 px-6 py-24 dark:bg-zinc-900/50 md:py-32">
         <div ref={stepsRef} data-reveal className="mx-auto max-w-5xl">
 
           <div className="mb-16 text-center">
             <span className="mb-4 block text-xs font-extrabold uppercase tracking-[0.2em] text-orange-500">
               How it works
             </span>
-            <h2 className="text-4xl font-extrabold leading-tight text-gray-900 md:text-5xl">
+            <h2 className="text-4xl font-extrabold leading-tight text-gray-900 dark:text-white md:text-5xl">
               Up and running in minutes
             </h2>
-            <p className="mx-auto mt-4 max-w-md text-base leading-relaxed text-gray-500">
+            <p className="mx-auto mt-4 max-w-md text-base leading-relaxed text-gray-500 dark:text-gray-400">
               No complicated setup. Just sign in and start moving files securely.
             </p>
           </div>
@@ -660,7 +660,7 @@ export default function Home() {
             {STEPS.map((step, i) => (
               <div
                 key={step.title}
-                className="relative flex flex-col rounded-2xl border border-gray-200 bg-white p-7 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-orange-200 hover:shadow-lg hover:shadow-orange-500/8"
+                className="relative flex flex-col rounded-2xl border border-gray-200 bg-white p-7 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-orange-200 hover:shadow-lg hover:shadow-orange-500/8 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-orange-700"
               >
                 {/* Step number badge — green */}
                 <div className="mb-5 flex items-center justify-between">
@@ -671,12 +671,12 @@ export default function Home() {
                     {i + 1}
                   </span>
                 </div>
-                <h3 className="mb-2 font-bold text-gray-900">{step.title}</h3>
-                <p className="text-sm leading-relaxed text-gray-500">{step.desc}</p>
+                <h3 className="mb-2 font-bold text-gray-900 dark:text-white">{step.title}</h3>
+                <p className="text-sm leading-relaxed text-gray-500 dark:text-gray-400">{step.desc}</p>
 
                 {/* Step label */}
                 <div className="mt-5 flex items-center gap-1.5">
-                  <div className="h-px flex-1 bg-gray-100" />
+                  <div className="h-px flex-1 bg-gray-100 dark:bg-zinc-800" />
                   <span className="text-[10px] font-bold uppercase tracking-widest text-gray-300">
                     Step {step.step}
                   </span>
@@ -691,7 +691,7 @@ export default function Home() {
       {/* ══════════════════════════════════════════
           SECURITY — the main orange section (20%)
       ══════════════════════════════════════════ */}
-      <section id="security" className="bg-white px-6 py-24 md:py-32">
+      <section id="security" className="bg-white px-6 py-24 dark:bg-zinc-950 md:py-32">
         <div className="mx-auto max-w-6xl">
           <div
             ref={securityRef}
@@ -747,17 +747,17 @@ export default function Home() {
       {/* ══════════════════════════════════════════
           CONTACT TEASER — white
       ══════════════════════════════════════════ */}
-      <section id="contact" className="bg-gray-50 px-6 py-24 md:py-28">
+      <section id="contact" className="bg-gray-50 px-6 py-24 dark:bg-zinc-900/50 md:py-28">
         <div className="mx-auto max-w-5xl">
           <div ref={contactRef} data-reveal>
             <div className="mb-14 text-center">
               <span className="mb-4 block text-xs font-extrabold uppercase tracking-[0.2em] text-orange-500">
                 Get in touch
               </span>
-              <h2 className="text-4xl font-extrabold leading-tight text-gray-900 md:text-5xl">
+              <h2 className="text-4xl font-extrabold leading-tight text-gray-900 dark:text-white md:text-5xl">
                 We&apos;d love to hear from you
               </h2>
-              <p className="mx-auto mt-4 max-w-md text-base leading-relaxed text-gray-500">
+              <p className="mx-auto mt-4 max-w-md text-base leading-relaxed text-gray-500 dark:text-gray-400">
                 Have a question, need a demo, or exploring enterprise plans? Our team is ready to help.
               </p>
             </div>
@@ -767,14 +767,14 @@ export default function Home() {
                 <a
                   key={label}
                   href={href}
-                  className="group flex flex-col items-center gap-4 rounded-2xl border border-gray-200 bg-white p-8 text-center shadow-sm transition-all duration-300 hover:border-orange-200 hover:-translate-y-1 hover:shadow-lg hover:shadow-orange-500/10"
+                  className="group flex flex-col items-center gap-4 rounded-2xl border border-gray-200 bg-white p-8 text-center shadow-sm transition-all duration-300 hover:border-orange-200 hover:-translate-y-1 hover:shadow-lg hover:shadow-orange-500/10 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-orange-700"
                 >
                   <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-orange-500 shadow-lg shadow-orange-500/25 transition-transform duration-300 group-hover:scale-110">
                     <Icon size={22} className="text-white" />
                   </div>
                   <div>
                     <p className="mb-1 text-xs font-bold uppercase tracking-widest text-orange-500">{label}</p>
-                    <p className="text-sm font-semibold text-gray-700">{value}</p>
+                    <p className="text-sm font-semibold text-gray-700 dark:text-gray-200">{value}</p>
                   </div>
                 </a>
               ))}
@@ -796,7 +796,7 @@ export default function Home() {
       {/* ══════════════════════════════════════════
           FOOTER — white body, orange bottom bar
       ══════════════════════════════════════════ */}
-      <footer className="overflow-hidden bg-white">
+      <footer className="overflow-hidden bg-white dark:bg-zinc-950">
 
         {/* Orange top accent stripe */}
         <div className="h-1 w-full bg-linear-to-r from-orange-400 via-orange-500 to-amber-400" />
@@ -832,13 +832,13 @@ export default function Home() {
                   <LogoMark />
                 </div>
                 <div>
-                  <div className="text-sm font-extrabold leading-tight text-gray-900">Jai Export</div>
+                  <div className="text-sm font-extrabold leading-tight text-gray-900 dark:text-white">Jai Export</div>
                   <div className="text-[9px] font-semibold uppercase leading-tight tracking-[0.18em] text-orange-500">
                     Enterprises
                   </div>
                 </div>
               </div>
-              <p className="mb-5 text-sm leading-relaxed text-gray-500">
+              <p className="mb-5 text-sm leading-relaxed text-gray-500 dark:text-gray-400">
                 Secure file transfer and storage for modern enterprise teams.
               </p>
               {/* Status badge */}
@@ -851,14 +851,14 @@ export default function Home() {
                 <a
                   href="mailto:hello@jai-india.com"
                   aria-label="Email"
-                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-gray-200 text-gray-400 transition-all hover:border-orange-300 hover:bg-orange-50 hover:text-orange-500"
+                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-gray-200 text-gray-400 transition-all hover:border-orange-300 hover:bg-orange-50 hover:text-orange-500 dark:border-zinc-700 dark:text-gray-500 dark:hover:border-orange-700 dark:hover:bg-orange-500/10 dark:hover:text-orange-400"
                 >
                   <Mail size={14} />
                 </a>
                 <a
                   href="#"
                   aria-label="GitHub"
-                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-gray-200 text-gray-400 transition-all hover:border-orange-300 hover:bg-orange-50 hover:text-orange-500"
+                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-gray-200 text-gray-400 transition-all hover:border-orange-300 hover:bg-orange-50 hover:text-orange-500 dark:border-zinc-700 dark:text-gray-500 dark:hover:border-orange-700 dark:hover:bg-orange-500/10 dark:hover:text-orange-400"
                 >
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
                     <path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0 1 12 6.844a9.59 9.59 0 0 1 2.504.337c1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.02 10.02 0 0 0 22 12.017C22 6.484 17.522 2 12 2z" />
@@ -867,7 +867,7 @@ export default function Home() {
                 <a
                   href="#"
                   aria-label="LinkedIn"
-                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-gray-200 text-gray-400 transition-all hover:border-orange-300 hover:bg-orange-50 hover:text-orange-500"
+                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-gray-200 text-gray-400 transition-all hover:border-orange-300 hover:bg-orange-50 hover:text-orange-500 dark:border-zinc-700 dark:text-gray-500 dark:hover:border-orange-700 dark:hover:bg-orange-500/10 dark:hover:text-orange-400"
                 >
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
                     <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 0 1-2.063-2.065 2.064 2.064 0 1 1 2.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z" />
@@ -887,7 +887,7 @@ export default function Home() {
                     <li key={label}>
                       <a
                         href={href}
-                        className="group flex items-center gap-1.5 text-sm text-gray-500 transition-colors hover:text-orange-500"
+                        className="group flex items-center gap-1.5 text-sm text-gray-500 transition-colors hover:text-orange-500 dark:text-gray-400 dark:hover:text-orange-400"
                       >
                         <ChevronRight
                           size={13}
@@ -910,7 +910,7 @@ export default function Home() {
                 <li>
                   <a
                     href="mailto:hello@jai-india.com"
-                    className="flex items-center gap-2 text-sm text-gray-500 transition-colors hover:text-orange-500"
+                    className="flex items-center gap-2 text-sm text-gray-500 transition-colors hover:text-orange-500 dark:text-gray-400 dark:hover:text-orange-400"
                   >
                     <Mail size={13} className="shrink-0 text-orange-400" />
                     hello@jai-india.com
@@ -919,7 +919,7 @@ export default function Home() {
                 <li>
                   <a
                     href="tel:+919876543210"
-                    className="flex items-center gap-2 text-sm text-gray-500 transition-colors hover:text-orange-500"
+                    className="flex items-center gap-2 text-sm text-gray-500 transition-colors hover:text-orange-500 dark:text-gray-400 dark:hover:text-orange-400"
                   >
                     <Phone size={13} className="shrink-0 text-orange-400" />
                     +91 98765 43210
@@ -928,7 +928,7 @@ export default function Home() {
                 <li>
                   <Link
                     href="/contact"
-                    className="flex items-center gap-2 text-sm text-gray-500 transition-colors hover:text-orange-500"
+                    className="flex items-center gap-2 text-sm text-gray-500 transition-colors hover:text-orange-500 dark:text-gray-400 dark:hover:text-orange-400"
                   >
                     <ChevronRight size={13} className="shrink-0 text-orange-400" />
                     Enquiry form

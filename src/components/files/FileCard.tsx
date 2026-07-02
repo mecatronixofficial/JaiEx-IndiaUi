@@ -14,10 +14,12 @@ import {
 } from "lucide-react";
 
 import type { FileItem } from "@/types";
+import { useAuth } from "@/contexts/AuthContext";
 import { cn, formatBytes, formatRelative, getFileColorClass, truncate } from "@/lib/utils";
 import { FileTypeIcon } from "@/components/ui/FileTypeIcon";
 import { filesApi } from "@/lib/api";
 import { handleApiError } from "@/lib/error-handler";
+import { deleteFileWithOtp } from "@/lib/file-delete";
 import { showToast } from "@/lib/toast";
 import { Badge, DropdownMenu } from "@/components/ui";
 import Button from "../ui/Button";
@@ -46,18 +48,28 @@ export type MenuItem =
     }
   | { divider: true };
 
+function extractFileId(file: FileItem): string {
+  const record = file as FileItem & { _id?: unknown; id?: unknown };
+  if (typeof record.id === "string") return record.id;
+  if (typeof record._id === "string") return record._id;
+  if (record.id && typeof record.id === "object" && "toString" in record.id) return String(record.id);
+  if (record._id && typeof record._id === "object" && "toString" in record._id) return String(record._id);
+  return "";
+}
+
 /* =========================================================
    ACTIONS HOOK
 ========================================================= */
 
 function useFileActions(file: FileItem, onRefresh: () => void) {
   const router = useRouter();
+  const fileId = extractFileId(file);
   const [renaming, setRenaming] = useState(false);
   const [newName, setNewName] = useState(file.name);
 
   const handleDownload = useCallback(async () => {
     try {
-      const res = await filesApi.download(file.id);
+      const res = await filesApi.download(fileId);
       const url: string =
         res.data?.data?.downloadUrl ??
         res.data?.downloadUrl ??
@@ -75,39 +87,35 @@ function useFileActions(file: FileItem, onRefresh: () => void) {
     } catch (err) {
       handleApiError(err);
     }
-  }, [file.id, file.originalName, file.name]);
+  }, [fileId, file.originalName, file.name]);
 
   const handleDelete = useCallback(async () => {
-    try {
-      // TODO: collect OTP code via a dialog before deleting
-      await filesApi.delete(file.id, "");
-      showToast.success("Moved to trash");
+    const deleted = await deleteFileWithOtp(fileId);
+    if (deleted) {
       onRefresh();
-    } catch (err) {
-      handleApiError(err);
     }
-  }, [file.id, onRefresh]);
+  }, [fileId, onRefresh]);
 
   const handleRestore = useCallback(async () => {
     try {
-      await filesApi.restore(file.id);
+      await filesApi.restore(fileId);
       showToast.success("File restored");
       onRefresh();
     } catch (err) {
       handleApiError(err);
     }
-  }, [file.id, onRefresh]);
+  }, [fileId, onRefresh]);
 
   const handlePermanentDelete = useCallback(async () => {
     if (!window.confirm("Permanently delete this file? This action cannot be undone.")) return;
     try {
-      await filesApi.permanentDelete(file.id);
+      await filesApi.permanentDelete(fileId);
       showToast.success("File permanently deleted");
       onRefresh();
     } catch (err) {
       handleApiError(err);
     }
-  }, [file.id, onRefresh]);
+  }, [fileId, onRefresh]);
 
   const handleRename = useCallback(async () => {
     const trimmed = newName.trim();
@@ -117,20 +125,24 @@ function useFileActions(file: FileItem, onRefresh: () => void) {
       return;
     }
     try {
-      await filesApi.rename(file.id, trimmed);
+      await filesApi.rename(fileId, trimmed);
       showToast.success("File renamed");
       setRenaming(false);
       onRefresh();
     } catch (err) {
       handleApiError(err);
     }
-  }, [file.id, file.name, newName, onRefresh]);
+  }, [fileId, file.name, newName, onRefresh]);
 
   const handleShare = useCallback(() => {
+    if (!fileId) {
+      showToast.error("This file is missing its server ID. Please refresh and try again.");
+      return;
+    }
     sessionStorage.setItem(
       "pending_send",
       JSON.stringify([{
-        id: file.id,
+        id: fileId,
         name: file.name,
         size: file.size,
         mimeType: file.mimeType,
@@ -138,11 +150,11 @@ function useFileActions(file: FileItem, onRefresh: () => void) {
       }]),
     );
     router.push("/transfers/send");
-  }, [file.id, file.name, file.size, file.mimeType, file.extension, router]);
+  }, [fileId, file.name, file.size, file.mimeType, file.extension, router]);
 
   const handleManageShares = useCallback(() => {
-    router.push(`/shared?file=${file.id}`);
-  }, [file.id, router]);
+    router.push(`/shared?file=${fileId}`);
+  }, [fileId, router]);
 
   return {
     renaming,
@@ -159,6 +171,28 @@ function useFileActions(file: FileItem, onRefresh: () => void) {
   };
 }
 
+type FileWithOwner = FileItem & {
+  uploadedBy?: string | { id?: string; _id?: string };
+  createdBy?: string | { id?: string; _id?: string };
+};
+
+function readOwnerId(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim()) return value;
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as { id?: string; _id?: string };
+  return record.id ?? record._id;
+}
+
+function fileOwnerIds(file: FileItem): string[] {
+  const owned = file as FileWithOwner;
+  return [
+    file.ownerId,
+    file.owner?.id,
+    readOwnerId(owned.uploadedBy),
+    readOwnerId(owned.createdBy),
+  ].filter((id): id is string => Boolean(id));
+}
+
 /* =========================================================
    FILE CARD
 ========================================================= */
@@ -171,7 +205,14 @@ export function FileCard({
   isTrash = false,
   isShared = false,
 }: FileCardProps) {
+  const { user } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
+  const fileId = extractFileId(file);
+  const currentUserId = user?.id ?? (user as { _id?: string } | null)?._id;
+  const isSuperadmin = user?.role === "superadmin";
+  const isOwner = !!currentUserId && fileOwnerIds(file).includes(currentUserId);
+  const canManage = isSuperadmin || isOwner;
+  const canSend = isOwner;
 
   const {
     renaming, setRenaming,
@@ -188,25 +229,26 @@ export function FileCard({
   const menuItems: MenuItem[] = useMemo(() => {
     if (isTrash) {
       return [
-        { label: "Restore", icon: <RotateCcw size={14} />, onClick: handleRestore },
+        { label: "Restore", icon: <RotateCcw size={14} />, onClick: handleRestore, disabled: !canManage },
         { divider: true },
-        { label: "Delete Forever", icon: <X size={14} />, onClick: handlePermanentDelete, danger: true },
+        { label: "Delete Forever", icon: <X size={14} />, onClick: handlePermanentDelete, danger: true, disabled: !canManage },
       ];
     }
 
     return [
       { label: "Download", icon: <Download size={14} />, onClick: handleDownload },
-      { label: "Rename", icon: <Edit3 size={14} />, onClick: () => setRenaming(true) },
+      { label: "Rename", icon: <Edit3 size={14} />, onClick: () => setRenaming(true), disabled: !canManage },
       {
         label: isShared ? "Manage Sharing" : "Send / Share",
         icon: isShared ? <ExternalLink size={14} /> : <Share2 size={14} />,
         onClick: isShared ? handleManageShares : handleShare,
+        disabled: isShared ? !canManage : !canSend,
       },
       { divider: true },
-      { label: "Move to Trash", icon: <Trash2 size={14} />, onClick: handleDelete, danger: true },
+      { label: "Move to Trash", icon: <Trash2 size={14} />, onClick: handleDelete, danger: true, disabled: !canManage },
     ];
   }, [
-    isTrash, isShared,
+    isTrash, isShared, canManage, canSend,
     handleDownload, handleDelete, handleRestore, handlePermanentDelete,
     handleShare, handleManageShares, setRenaming,
   ]);
@@ -226,7 +268,7 @@ export function FileCard({
           type="checkbox"
           aria-label={`Select ${file.name}`}
           checked={selected}
-          onChange={(e) => onSelect(file.id, e.target.checked)}
+          onChange={(e) => onSelect(fileId, e.target.checked)}
           onClick={(e) => e.stopPropagation()}
           className="absolute left-4 top-4 z-20 h-4 w-4 accent-orange-500"
         />
@@ -316,6 +358,7 @@ export function FileRow({
   isTrash = false,
 }: FileCardProps) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const fileId = extractFileId(file);
 
   const { handleDownload, handleDelete, handleRestore, handlePermanentDelete } =
     useFileActions(file, onRefresh);
@@ -343,7 +386,7 @@ export function FileRow({
             type="checkbox"
             aria-label={`Select ${file.name}`}
             checked={selected}
-            onChange={(e) => onSelect(file.id, e.target.checked)}
+            onChange={(e) => onSelect(fileId, e.target.checked)}
             className="h-4 w-4 accent-orange-500"
           />
         )}

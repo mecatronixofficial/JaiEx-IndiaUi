@@ -711,7 +711,7 @@ export default function AdminStoragePage() {
               step="1"
               helperText="1 GB = 1,073,741,824 bytes"
             />
-            <div className="flex gap-3 pt-2">
+            <div className="flex flex-col gap-3 pt-2">
               <Button variant="secondary" fullWidth type="button" onClick={() => setQuotaUser(null)}>
                 Cancel
               </Button>

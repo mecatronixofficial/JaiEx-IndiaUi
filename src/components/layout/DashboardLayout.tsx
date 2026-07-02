@@ -53,6 +53,7 @@ export default function DashboardLayout({
   children: ReactNode;
 }) {
   const { user } = useAuth();
+  const userId = user?.id ?? user?._id;
 
   const [storageUsed, setStorageUsed]             = useState(0);
   const [storageQuota, setStorageQuota]           = useState(DEFAULT_QUOTA);
@@ -72,7 +73,7 @@ export default function DashboardLayout({
      not calling setState synchronously within an effect.
   ── */
   useEffect(() => {
-    if (!user?.id) return; // AuthGuard guarantees user is present on dashboard routes
+    if (!userId) return;
 
     let alive = true;
 
@@ -95,7 +96,7 @@ export default function DashboardLayout({
 
     fetchStorage();
     return () => { alive = false; };
-  }, [user, refreshSeq]);
+  }, [user, userId, refreshSeq]);
 
   /* ── Mobile sidebar: close on Escape ── */
   useEffect(() => {

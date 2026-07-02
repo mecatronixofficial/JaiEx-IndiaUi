@@ -154,7 +154,7 @@ export default function AdminLinksPage() {
   const router = useRouter();
 
   const role = me?.role?.toLowerCase();
-  const isAdmin = role === "admin" || role === "superadmin";
+  const isSuperAdmin = role === "superadmin";
 
   const [links,     setLinks]     = useState<AdminLink[]>([]);
   const [total,     setTotal]     = useState(0);
@@ -166,11 +166,11 @@ export default function AdminLinksPage() {
   const [page,      setPage]      = useState(1);
 
   useEffect(() => {
-    if (me && !isAdmin) router.replace("/dashboard");
-  }, [me, isAdmin, router]);
+    if (me && !isSuperAdmin) router.replace("/links");
+  }, [me, isSuperAdmin, router]);
 
   const load = useCallback(async () => {
-    if (!isAdmin) return;
+    if (!isSuperAdmin) return;
     setLoading(true);
     try {
       const adminParams: {
@@ -225,7 +225,7 @@ export default function AdminLinksPage() {
     } finally {
       setLoading(false);
     }
-  }, [isAdmin, page, status, typeFilter]);
+  }, [isSuperAdmin, page, status, typeFilter]);
 
   useEffect(() => {
     void Promise.resolve().then(() => load());

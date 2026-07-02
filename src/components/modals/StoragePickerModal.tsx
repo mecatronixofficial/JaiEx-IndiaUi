@@ -74,6 +74,14 @@ function fileFolderId(file: FileItem): string | null {
   return extractId(file.folderId as unknown);
 }
 
+function fileId(file: FileItem): string {
+  return extractId(file) ?? "";
+}
+
+function fileName(file: FileItem): string {
+  return file.name ?? file.fileName ?? file.originalName ?? "Untitled file";
+}
+
 function cleanPath(path?: string | null): string {
   return (path ?? "")
     .split("/")
@@ -254,7 +262,7 @@ export default function StoragePickerModal({
     if (!folderId) return undefined;
     const folder = folderById.get(folderId);
     if (!folder) return undefined;
-    return cleanPath(`${folderPath(folder)}/${file.name}`);
+    return cleanPath(`${folderPath(folder)}/${fileName(file)}`);
   }
 
   function descendantFolderIds(folderId: string): Set<string> {
@@ -297,8 +305,8 @@ export default function StoragePickerModal({
   function toPickedFile(f: FileItem): PickedFile {
     const relativePath = fileRelativePath(f);
     return {
-      id: f.id,
-      name: f.name,
+      id: fileId(f),
+      name: fileName(f),
       size: f.size ?? 0,
       mimeType: f.mimeType ?? "",
       extension: f.extension ?? "",
@@ -307,10 +315,13 @@ export default function StoragePickerModal({
   }
 
   function toggleFile(f: FileItem) {
+    const id = fileId(f);
+    if (!id) return;
+
     setSelected((prev) => {
       const next = new Map(prev);
-      if (next.has(f.id)) next.delete(f.id);
-      else next.set(f.id, toPickedFile(f));
+      if (next.has(id)) next.delete(id);
+      else next.set(id, toPickedFile(f));
       return next;
     });
   }
@@ -318,7 +329,10 @@ export default function StoragePickerModal({
   function selectAllVisible() {
     setSelected((prev) => {
       const next = new Map(prev);
-      visibleFiles.forEach((f) => { if (!alreadySelectedIds?.has(f.id)) next.set(f.id, toPickedFile(f)); });
+      visibleFiles.forEach((f) => {
+        const id = fileId(f);
+        if (id && !alreadySelectedIds?.has(id)) next.set(id, toPickedFile(f));
+      });
       return next;
     });
   }
@@ -326,7 +340,7 @@ export default function StoragePickerModal({
   function deselectAllVisible() {
     setSelected((prev) => {
       const next = new Map(prev);
-      visibleFiles.forEach((f) => next.delete(f.id));
+      visibleFiles.forEach((f) => next.delete(fileId(f)));
       return next;
     });
   }
@@ -334,21 +348,30 @@ export default function StoragePickerModal({
   /** Checkbox handler for a folder card — toggles every file in that folder tree. */
   function toggleFolderFiles(folder: RawFolder) {
     const folderFiles = filesInFolderTree(folder);
-    const allChecked  = folderFiles.length > 0 && folderFiles.every((f) => selected.has(f.id) || alreadySelectedIds?.has(f.id));
+    const allChecked  = folderFiles.length > 0 && folderFiles.every((f) => {
+      const id = fileId(f);
+      return Boolean(id) && (selected.has(id) || alreadySelectedIds?.has(id));
+    });
     setSelected((prev) => {
       const next = new Map(prev);
       if (allChecked) {
-        folderFiles.forEach((f) => next.delete(f.id));
+        folderFiles.forEach((f) => next.delete(fileId(f)));
       } else {
-        folderFiles.forEach((f) => { if (!alreadySelectedIds?.has(f.id)) next.set(f.id, toPickedFile(f)); });
+        folderFiles.forEach((f) => {
+          const id = fileId(f);
+          if (id && !alreadySelectedIds?.has(id)) next.set(id, toPickedFile(f));
+        });
       }
       return next;
     });
   }
 
   /* ── Indeterminate ref helper ── */
-  const allCurrentSelected = visibleFiles.length > 0 && visibleFiles.every((f) => selected.has(f.id) || alreadySelectedIds?.has(f.id));
-  const someCurrentSelected = visibleFiles.some((f) => selected.has(f.id));
+  const allCurrentSelected = visibleFiles.length > 0 && visibleFiles.every((f) => {
+    const id = fileId(f);
+    return Boolean(id) && (selected.has(id) || alreadySelectedIds?.has(id));
+  });
+  const someCurrentSelected = visibleFiles.some((f) => selected.has(fileId(f)));
 
   /* ── Confirm ── */
   const handleConfirm = useCallback(() => {
@@ -437,8 +460,11 @@ export default function StoragePickerModal({
           {searchedFolders.map((folder) => {
             const folderFiles    = filesInFolderTree(folder);
             const childFolders   = allFolders.filter((f) => f.parentId === folder.id);
-            const allFolderChk   = folderFiles.length > 0 && folderFiles.every((f) => selected.has(f.id) || alreadySelectedIds?.has(f.id));
-            const someFolderChk  = folderFiles.some((f) => selected.has(f.id));
+            const allFolderChk   = folderFiles.length > 0 && folderFiles.every((f) => {
+              const id = fileId(f);
+              return Boolean(id) && (selected.has(id) || alreadySelectedIds?.has(id));
+            });
+            const someFolderChk  = folderFiles.some((f) => selected.has(fileId(f)));
             const hasFiles       = folderFiles.length > 0;
 
             return (
@@ -479,12 +505,13 @@ export default function StoragePickerModal({
 
           {/* File rows */}
           {searchedFiles.map((f) => {
-            const isSelected  = selected.has(f.id);
-            const isAlready   = alreadySelectedIds?.has(f.id) ?? false;
+            const id = fileId(f);
+            const isSelected  = selected.has(id);
+            const isAlready   = alreadySelectedIds?.has(id) ?? false;
 
             return (
               <label
-                key={f.id}
+                key={id}
                 className={[
                   "flex cursor-pointer items-center gap-2.5 border-b border-gray-50 px-3 py-2 transition-colors dark:border-zinc-800/50",
                   isAlready  ? "cursor-not-allowed opacity-50" : "",
@@ -500,7 +527,7 @@ export default function StoragePickerModal({
                 />
                 {fileIcon(f.mimeType, f.extension)}
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm text-(--text)">{f.name}</p>
+                  <p className="truncate text-sm text-(--text)">{fileName(f)}</p>
                   <p className="text-[11px] text-(--text-muted)">{formatBytes(f.size ?? 0)}</p>
                 </div>
                 {isSelected && <CheckCircle size={13} className="shrink-0 text-orange-500" />}

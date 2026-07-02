@@ -20,6 +20,7 @@ import {
   CalendarDays, Clock3, Database, GitBranch, Route,
 } from "lucide-react";
 import { handleApiError } from "@/lib/error-handler";
+import { bulkDeleteFilesWithOtp, deleteFileWithOtp } from "@/lib/file-delete";
 import { showToast } from "@/lib/toast";
 import Button from "@/components/ui/Button";
 import { cn, formatBytes, formatRelative, formatDateTime, truncate } from "@/lib/utils";
@@ -35,6 +36,20 @@ type OwnerRoleFilter = "all" | OwnerRole;
 type OwnedFileItem = FileItem & {
   uploadedBy?: { id?: string; _id?: string; name?: string; email?: string; role?: string };
 };
+
+function extractEntityId(value: unknown): string {
+  if (!value) return "";
+  if (typeof value === "string") return value;
+  const record = value as Record<string, unknown>;
+  const id = record.id ?? record._id;
+  if (typeof id === "string") return id;
+  if (id && typeof id === "object" && "toString" in id) return String(id);
+  return "";
+}
+
+function normalizeFile(file: FileItem): FileItem {
+  return { ...file, id: extractEntityId(file) };
+}
 
 const PAGE_SIZE = 24;
 const VALID_TYPE_FILTERS: TypeFilter[] = ["all", "image", "video", "document", "spreadsheet", "other"];
@@ -97,6 +112,20 @@ function getOwnerLabel(file: OwnedFileItem) {
   return file.owner?.name ?? file.uploadedBy?.name ?? file.owner?.email ?? file.uploadedBy?.email ?? "Unknown owner";
 }
 
+function fileOwnerIds(file: FileItem): string[] {
+  const owned = file as OwnedFileItem;
+  return [
+    file.ownerId,
+    file.owner?.id,
+    owned.uploadedBy?.id,
+    owned.uploadedBy?._id,
+  ].filter((id): id is string => Boolean(id));
+}
+
+function isFileOwner(file: FileItem, userId?: string) {
+  return !!userId && fileOwnerIds(file).includes(userId);
+}
+
 function getFolderLabel(file: FileItem, folderMap: Map<string, string>) {
   const folder = file.folderId as unknown;
   if (folder && typeof folder === "object") {
@@ -146,6 +175,7 @@ function FilesPageContent() {
   const [movingFolderId,   setMovingFolderId]   = useState<string | null | undefined>(undefined);
   const [submitting,       setSubmitting]       = useState(false);
   const isSuperadmin = user?.role === "superadmin";
+  const currentUserId = user?.id ?? (user as { _id?: string } | null)?._id;
 
   /* folderId → name lookup */
   const folderMap = useMemo(
@@ -157,7 +187,11 @@ function FilesPageContent() {
   useEffect(() => {
     foldersApi.list().then((res) => {
       const arr = res.data?.folders ?? res.data?.data ?? res.data ?? [];
-      setFolders(Array.isArray(arr) ? arr : []);
+      setFolders(
+        Array.isArray(arr)
+          ? arr.map((folder) => ({ ...folder, id: extractEntityId(folder) }))
+          : [],
+      );
     }).catch(() => {});
   }, []);
 
@@ -174,7 +208,7 @@ function FilesPageContent() {
       const res = await filesApi.list(params);
       const inner = res.data?.data ?? res.data;
       const f: FileItem[] = inner?.files ?? (Array.isArray(inner) ? inner : []);
-      setFiles(f);
+      setFiles(f.map(normalizeFile));
       setTotal(inner?.pagination?.total ?? inner?.total ?? f.length);
     } catch (err) {
       handleApiError(err);
@@ -218,6 +252,14 @@ function FilesPageContent() {
   const totalSize  = useMemo(() => files.reduce((s, f) => s + (f.size ?? 0), 0), [files]);
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const allSelected = filtered.length > 0 && selected.size === filtered.length;
+  const selectedFiles = useMemo(
+    () => files.filter((file) => selected.has(file.id)),
+    [files, selected],
+  );
+  const selectedSendable = useMemo(
+    () => selectedFiles.filter((file) => isFileOwner(file, currentUserId)),
+    [currentUserId, selectedFiles],
+  );
   const rootFileCount = useMemo(() => files.filter((f) => getFolderLabel(f, folderMap) === "Root").length, [files, folderMap]);
   const folderFileCount = Math.max(files.length - rootFileCount, 0);
   const sharedCount = useMemo(() => files.filter((f) => f.isShared).length, [files]);
@@ -290,21 +332,30 @@ function FilesPageContent() {
 
   /* ── Actions ── */
   function handleSendSelected() {
-    const payload = files
-      .filter((f) => selected.has(f.id))
-      .map(({ id, name, size, mimeType, extension }) => ({ id, name, size, mimeType, extension }));
+    if (selectedSendable.length === 0) {
+      showToast.error("You can only send files uploaded by you");
+      return;
+    }
+    const payload = selectedSendable
+      .map((file) => ({
+        id: extractEntityId(file),
+        name: file.name,
+        size: file.size,
+        mimeType: file.mimeType,
+        extension: file.extension,
+      }))
+      .filter((file) => file.id);
     sessionStorage.setItem("pending_send", JSON.stringify(payload));
     router.push("/transfers/send");
   }
 
   async function confirmBulkDelete() {
     setShowDeleteConfirm(false);
-    try {
-      await filesApi.bulkDelete(Array.from(selected), "");
-      showToast.success(`${selected.size} file${selected.size > 1 ? "s" : ""} moved to trash`);
+    const deleted = await bulkDeleteFilesWithOtp(Array.from(selected));
+    if (deleted) {
       setSelected(new Set());
       load(true);
-    } catch (err) { handleApiError(err); }
+    }
   }
 
   async function handleMoveToFolder(folderId: string | null) {
@@ -572,7 +623,8 @@ function FilesPageContent() {
                 Move to Folder
               </Button>
               <Button variant="secondary" size="sm" leftIcon={<Send size={13} />}
-                onClick={handleSendSelected}>
+                onClick={handleSendSelected}
+                disabled={selectedSendable.length === 0}>
                 Send
               </Button>
               <Button variant="danger" size="sm" glow={false} leftIcon={<Trash2 size={13} />}
@@ -727,9 +779,11 @@ function FilesPageContent() {
                               onSelect={toggleSelect}
                               folderName={getFolderLabel(file, folderMap)}
                               ownerName={getOwnerLabel(file as OwnedFileItem)}
+                              canManage={isSuperadmin || isFileOwner(file, currentUserId)}
+                              canSend={isFileOwner(file, currentUserId)}
                               onRefresh={() => load(true)}
                               onSend={() => {
-                                sessionStorage.setItem("pending_send", JSON.stringify([{ id: file.id, name: file.name, size: file.size, mimeType: file.mimeType, extension: file.extension }]));
+                                sessionStorage.setItem("pending_send", JSON.stringify([{ id: extractEntityId(file), name: file.name, size: file.size, mimeType: file.mimeType, extension: file.extension }]));
                                 router.push("/transfers/send");
                               }}
                             />
@@ -745,9 +799,11 @@ function FilesPageContent() {
                           onSelect={toggleSelect}
                           folderName={getFolderLabel(file, folderMap)}
                           ownerName={getOwnerLabel(file as OwnedFileItem)}
+                          canManage={isSuperadmin || isFileOwner(file, currentUserId)}
+                          canSend={isFileOwner(file, currentUserId)}
                           onRefresh={() => load(true)}
                           onSend={() => {
-                            sessionStorage.setItem("pending_send", JSON.stringify([{ id: file.id, name: file.name, size: file.size, mimeType: file.mimeType, extension: file.extension }]));
+                            sessionStorage.setItem("pending_send", JSON.stringify([{ id: extractEntityId(file), name: file.name, size: file.size, mimeType: file.mimeType, extension: file.extension }]));
                             router.push("/transfers/send");
                           }}
                         />
@@ -825,7 +881,7 @@ function FilesPageContent() {
                 <p className="mb-5 text-sm text-(--text-muted)">
                   Files will be moved to trash. You can restore them within 30 days.
                 </p>
-                <div className="flex gap-3">
+                <div className="flex flex-col gap-3">
                   <Button variant="secondary" fullWidth rounded="xl" onClick={() => setShowDeleteConfirm(false)}>Cancel</Button>
                   <Button variant="danger" fullWidth rounded="xl" leftIcon={<Trash2 size={14} />} onClick={confirmBulkDelete}>
                     Move to Trash
@@ -958,13 +1014,15 @@ function FilesSectionHeader({
    FILE LIST ROW — custom table row with folder column
 ───────────────────────────────────────────── */
 function FileListRow({
-  file, selected, onSelect, folderName, ownerName, onRefresh, onSend,
+  file, selected, onSelect, folderName, ownerName, canManage, canSend, onRefresh, onSend,
 }: {
   file: FileItem;
   selected: boolean;
   onSelect: (id: string, sel: boolean) => void;
   folderName?: string;
   ownerName?: string;
+  canManage: boolean;
+  canSend: boolean;
   onRefresh: () => void;
   onSend: () => void;
 }) {
@@ -981,11 +1039,10 @@ function FileListRow({
   }
 
   async function handleTrash() {
-    try {
-      await filesApi.delete(file.id, "");
-      showToast.success("Moved to trash");
+    const deleted = await deleteFileWithOtp(file.id);
+    if (deleted) {
       onRefresh();
-    } catch (err) { handleApiError(err); }
+    }
   }
 
   const statusCls =
@@ -1067,18 +1124,22 @@ function FileListRow({
       {/* Actions */}
       <td className="px-4 py-3.5">
         <div className="flex items-center justify-end gap-1">
-          <button type="button" aria-label="Send file" onClick={onSend}
-            className="flex h-7 w-7 items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-500 transition hover:border-blue-300 hover:text-blue-500 dark:border-zinc-700 dark:bg-zinc-800 dark:text-gray-400">
-            <Send size={12} />
-          </button>
+          {canSend && (
+            <button type="button" aria-label="Send file" onClick={onSend}
+              className="flex h-7 w-7 items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-500 transition hover:border-blue-300 hover:text-blue-500 dark:border-zinc-700 dark:bg-zinc-800 dark:text-gray-400">
+              <Send size={12} />
+            </button>
+          )}
           <button type="button" aria-label="Download file" onClick={handleDownload}
             className="flex h-7 w-7 items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-500 transition hover:border-green-300 hover:text-green-500 dark:border-zinc-700 dark:bg-zinc-800 dark:text-gray-400">
             <Download size={12} />
           </button>
-          <button type="button" aria-label="Move to trash" onClick={handleTrash}
-            className="flex h-7 w-7 items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-500 transition hover:border-red-300 hover:text-red-500 dark:border-zinc-700 dark:bg-zinc-800 dark:text-gray-400">
-            <Trash2 size={12} />
-          </button>
+          {canManage && (
+            <button type="button" aria-label="Move to trash" onClick={handleTrash}
+              className="flex h-7 w-7 items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-500 transition hover:border-red-300 hover:text-red-500 dark:border-zinc-700 dark:bg-zinc-800 dark:text-gray-400">
+              <Trash2 size={12} />
+            </button>
+          )}
         </div>
       </td>
     </tr>

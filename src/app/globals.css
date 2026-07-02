@@ -365,6 +365,10 @@
   background: radial-gradient(ellipse 80% 60% at 50% 0%, rgba(251, 146, 60, 0.18) 0%, transparent 70%), #ffffff;
 }
 
+.dark .hero-section {
+  background: radial-gradient(ellipse 80% 60% at 50% 0%, rgba(251, 146, 60, 0.14) 0%, transparent 70%), #09090b;
+}
+
 .blob-orange {
   background: radial-gradient(circle, rgba(249, 115, 22, 0.14) 0%, transparent 70%);
   animation: blob-drift 14s ease-in-out infinite;
@@ -426,6 +430,13 @@
     radial-gradient(circle at 60% 20%, rgba(249, 115, 22, 0.04) 0%, transparent 55%),
     radial-gradient(#e5e7eb 1px, transparent 1px);
   background-size: 100% 100%, 24px 24px;
+}
+
+.dark .login-right-bg {
+  background-color: #09090b;
+  background-image:
+    radial-gradient(circle at 60% 20%, rgba(249, 115, 22, 0.08) 0%, transparent 55%),
+    radial-gradient(rgba(63, 63, 70, 0.45) 1px, transparent 1px);
 }
 
 /* =========================================
