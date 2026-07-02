@@ -15,6 +15,9 @@ export const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "/api/v1";
 const MAX_429_RETRIES = 3;
 const DEFAULT_429_WAIT_MS = 5000;
 const MAX_429_WAIT_MS = 30000;
+const MAX_PART_UPLOAD_RETRIES = 3;
+const PART_UPLOAD_RETRY_BASE_MS = 1000;
+const PART_UPLOAD_TIMEOUT_MS = 10 * 60 * 1000;
 
 /* =========================
    TYPES
@@ -56,6 +59,31 @@ function readHeader(headers: AxiosResponse["headers"], name: string): string | u
   const value = headers[name] ?? headers[name.toLowerCase()];
   if (Array.isArray(value)) return value[0];
   return typeof value === "string" ? value : undefined;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableUploadError(error: unknown): boolean {
+  if (!axios.isAxiosError(error)) return false;
+  if (!error.response) return true;
+  const status = error.response.status;
+  return status === 429 || status >= 500;
+}
+
+function getPartUploadErrorMessage(error: unknown, partNumber: number): string {
+  if (axios.isAxiosError(error) && !error.response) {
+    const isOffline = typeof navigator !== "undefined" && !navigator.onLine;
+    if (isOffline) return "You appear to be offline. Check your connection.";
+    return `Network error while uploading part ${partNumber}. Check storage CORS and the presigned upload URL.`;
+  }
+
+  if (axios.isAxiosError(error) && error.response?.status) {
+    return `Upload part ${partNumber} failed with HTTP ${error.response.status}`;
+  }
+
+  return (error as Error)?.message || `Upload part ${partNumber} failed`;
 }
 
 const MIME_BY_EXTENSION: Record<string, string> = {
@@ -441,6 +469,10 @@ export const uploadApi = {
     onProgress?: (progress: number) => void,
     signal?: AbortSignal,
   ): Promise<UploadApiResponse> => {
+    if (file.size > UPLOAD_LIMITS.MAX_FILE_BYTES) {
+      throw new Error(`File is larger than ${Math.round(UPLOAD_LIMITS.MAX_FILE_BYTES / 1024 ** 3)} GB`);
+    }
+
     if (file.size > UPLOAD_LIMITS.MULTIPART_THRESHOLD) {
       return uploadApi.uploadMultipartFile(file, folderId, onProgress, signal);
     }
@@ -507,29 +539,45 @@ export const uploadApi = {
         const start = index * resolvedPartSize;
         const end = Math.min(start + resolvedPartSize, file.size);
         const chunk = file.slice(start, end);
-        const partUrlRes = await uploadApi.getPartUrl({ uploadId, key, partNumber });
-        const partUrlData = unwrapData<MultipartPartUrlData>(partUrlRes.data);
-        const url = partUrlData.url ?? partUrlData.uploadUrl ?? partUrlData.presignedUrl;
 
-        if (!url) {
-          throw new Error(`Could not get upload URL for part ${partNumber}`);
+        for (let attempt = 1; attempt <= MAX_PART_UPLOAD_RETRIES; attempt += 1) {
+          try {
+            const partUrlRes = await uploadApi.getPartUrl({ uploadId, key, partNumber });
+            const partUrlData = unwrapData<MultipartPartUrlData>(partUrlRes.data);
+            const url = partUrlData.url ?? partUrlData.uploadUrl ?? partUrlData.presignedUrl;
+
+            if (!url) {
+              throw new Error(`Could not get upload URL for part ${partNumber}`);
+            }
+
+            const uploadRes = await axios.put(url, chunk, {
+              signal,
+              timeout: PART_UPLOAD_TIMEOUT_MS,
+              maxBodyLength: Infinity,
+              maxContentLength: Infinity,
+              headers: { "Content-Type": contentType },
+              onUploadProgress: (progressEvent: AxiosProgressEvent) => {
+                updateProgress(index, progressEvent.loaded);
+              },
+            });
+            updateProgress(index, chunk.size);
+
+            const etag = readHeader(uploadRes.headers, "etag")?.replace(/^"|"$/g, "");
+            if (!etag) {
+              throw new Error(`Upload part ${partNumber} completed without an ETag`);
+            }
+
+            return { ETag: etag, PartNumber: partNumber };
+          } catch (error) {
+            updateProgress(index, 0);
+            if (attempt >= MAX_PART_UPLOAD_RETRIES || !isRetryableUploadError(error)) {
+              throw new Error(getPartUploadErrorMessage(error, partNumber));
+            }
+            await sleep(PART_UPLOAD_RETRY_BASE_MS * attempt);
+          }
         }
 
-        const uploadRes = await axios.put(url, chunk, {
-          signal,
-          headers: { "Content-Type": contentType },
-          onUploadProgress: (progressEvent: AxiosProgressEvent) => {
-            updateProgress(index, progressEvent.loaded);
-          },
-        });
-        updateProgress(index, chunk.size);
-
-        const etag = readHeader(uploadRes.headers, "etag")?.replace(/^"|"$/g, "");
-        if (!etag) {
-          throw new Error(`Upload part ${partNumber} completed without an ETag`);
-        }
-
-        return { ETag: etag, PartNumber: partNumber };
+        throw new Error(`Upload part ${partNumber} failed`);
       });
 
       const parts: { ETag: string; PartNumber: number }[] = new Array(partCount);

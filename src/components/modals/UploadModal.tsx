@@ -18,6 +18,7 @@ import {
   Link2,
 } from "lucide-react";
 import { uploadApi, transfersApi, foldersApi } from "@/lib/api";
+import { UPLOAD_LIMITS } from "@/helper/data_helper";
 import { formatBytes } from "@/lib/utils";
 import { showToast } from "@/lib/toast";
 import Button from "../ui/Button";
@@ -313,7 +314,16 @@ export default function UploadModal({
 
   /* ── Build / replace queue from raw file+path pairs ── */
   const buildQueue = useCallback((items: { file: File; relativePath: string }[]) => {
-    const uploadFiles: UploadFile[] = items.map(({ file, relativePath }) => {
+    const accepted = items.filter(({ file }) => file.size <= UPLOAD_LIMITS.MAX_FILE_BYTES);
+    const rejected = items.length - accepted.length;
+
+    if (rejected > 0) {
+      showToast.error(`${rejected} file${rejected !== 1 ? "s" : ""} skipped. Max size is ${formatBytes(UPLOAD_LIMITS.MAX_FILE_BYTES)} per file.`);
+    }
+
+    if (accepted.length === 0) return;
+
+    const uploadFiles: UploadFile[] = accepted.map(({ file, relativePath }) => {
       const parts = relativePath.split("/");
       const fp    = parts.length > 1 ? parts.slice(0, -1).join("/") : "";
       return {
@@ -326,7 +336,7 @@ export default function UploadModal({
       };
     });
 
-    const allRelPaths  = items.map((i) => i.relativePath);
+    const allRelPaths  = accepted.map((i) => i.relativePath);
     const folderPaths  = extractFolderPaths(allRelPaths);
     const uploadFolders: UploadFolder[] = folderPaths.map((path) => ({
       path,

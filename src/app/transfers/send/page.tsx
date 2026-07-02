@@ -63,6 +63,7 @@ import {
   TrendingUp,
 } from "lucide-react";
 import { formatBytes, formatRelative } from "@/lib/utils";
+import { UPLOAD_LIMITS } from "@/helper/data_helper";
 import {
   getTransferFileCount,
   getTransfersFromResponse,
@@ -305,8 +306,9 @@ function StatusBadge({ status }: { status: string }) {
 ────────────────────────────────────────── */
 function fileIcon(file: File) {
   const t = file.type;
+  const ext = file.name.split(".").pop()?.toLowerCase();
   if (t.startsWith("image/")) return <ImageIcon size={16} className="text-blue-500" />;
-  if (t.startsWith("video/")) return <Video   size={16} className="text-purple-500" />;
+  if (t.startsWith("video/") || ext === "3gp" || ext === "3g2") return <Video size={16} className="text-purple-500" />;
   if (t.startsWith("audio/")) return <Music   size={16} className="text-pink-500" />;
   if (t.includes("pdf"))      return <FileText size={16} className="text-red-500" />;
   if (t.includes("zip") || t.includes("rar") || t.includes("7z")) return <Archive size={16} className="text-amber-500" />;
@@ -482,10 +484,19 @@ export default function SendPage() {
   }
 
   function addRawFiles(items: { file: File; relativePath?: string }[]) {
+    const accepted = items.filter(({ file }) => file.size <= UPLOAD_LIMITS.MAX_FILE_BYTES);
+    const rejected = items.length - accepted.length;
+
+    if (rejected > 0) {
+      showToast.error(`${rejected} file${rejected !== 1 ? "s" : ""} skipped. Max size is ${formatBytes(UPLOAD_LIMITS.MAX_FILE_BYTES)} per file.`);
+    }
+
+    if (accepted.length === 0) return;
+
     setFiles((prev) => {
       const next = [
         ...prev,
-        ...items.map(({ file, relativePath }) => ({
+        ...accepted.map(({ file, relativePath }) => ({
           id: crypto.randomUUID(),
           file,
           progress: 0,
@@ -494,8 +505,8 @@ export default function SendPage() {
         })),
       ];
       /* Auto-suggest a title from the first file when none has been set */
-      if (prev.length === 0 && items.length > 0) {
-        setTitle((t) => t || items[0].file.name.replace(/\.[^/.]+$/, ""));
+      if (prev.length === 0 && accepted.length > 0) {
+        setTitle((t) => t || accepted[0].file.name.replace(/\.[^/.]+$/, ""));
       }
       return next;
     });
