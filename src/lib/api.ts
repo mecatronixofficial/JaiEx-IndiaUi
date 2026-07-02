@@ -64,17 +64,119 @@ function unwrapData<T = Record<string, unknown>>(payload: unknown): T {
   return ((current ?? {}) as T);
 }
 
-function readHeader(headers: AxiosResponse["headers"], name: string): string | undefined {
-  const value = headers[name] ?? headers[name.toLowerCase()];
-  if (Array.isArray(value)) return value[0];
-  return typeof value === "string" ? value : undefined;
-}
-
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function assertUsableUploadUrl(rawUrl: string, partNumber: number): string {
+  try {
+    const parsed = new URL(rawUrl);
+    const uploadId = parsed.searchParams.get("uploadId");
+    const signedPartNumber = parsed.searchParams.get("partNumber");
+
+    if (signedPartNumber && Number(signedPartNumber) !== partNumber) {
+      throw new Error(
+        `Upload URL for part ${partNumber} was signed for part ${signedPartNumber}`,
+      );
+    }
+
+    if (!uploadId) {
+      throw new Error(`Upload URL for part ${partNumber} is missing uploadId`);
+    }
+
+    return parsed.toString();
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error(`Upload URL for part ${partNumber} is not a valid URL`);
+    }
+    throw error;
+  }
+}
+
+function putPresignedPart(
+  url: string,
+  chunk: Blob,
+  partNumber: number,
+  signal: AbortSignal | undefined,
+  onProgress: (loaded: number) => void,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    let settled = false;
+
+    const cleanup = () => {
+      settled = true;
+      signal?.removeEventListener("abort", abort);
+    };
+
+    const fail = (error: Error) => {
+      if (settled) return;
+      cleanup();
+      reject(error);
+    };
+
+    const abort = () => {
+      xhr.abort();
+      fail(new DOMException("Upload aborted", "AbortError"));
+    };
+
+    if (signal?.aborted) {
+      abort();
+      return;
+    }
+
+    xhr.open("PUT", url, true);
+    xhr.responseType = "text";
+    xhr.timeout = PART_UPLOAD_TIMEOUT_MS;
+
+    signal?.addEventListener("abort", abort, { once: true });
+
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) {
+        onProgress(event.loaded);
+      }
+    };
+
+    xhr.onerror = () => {
+      fail(new Error("ERR_NETWORK"));
+    };
+
+    xhr.ontimeout = () => {
+      fail(new Error(`Upload part ${partNumber} timed out`));
+    };
+
+    xhr.onabort = () => {
+      fail(new DOMException("Upload aborted", "AbortError"));
+    };
+
+    xhr.onload = () => {
+      if (xhr.status < 200 || xhr.status >= 300) {
+        fail(new Error(`HTTP ${xhr.status}`));
+        return;
+      }
+
+      const etag = xhr.getResponseHeader("ETag")?.replace(/^"|"$/g, "");
+      if (!etag) {
+        fail(new Error(`Upload part ${partNumber} completed without an ETag`));
+        return;
+      }
+
+      cleanup();
+      resolve(etag);
+    };
+
+    xhr.send(chunk);
+  });
+}
+
 function isRetryableUploadError(error: unknown): boolean {
+  if (error instanceof DOMException && error.name === "AbortError") return false;
+  if (error instanceof Error) {
+    if (error.message === "ERR_NETWORK") return true;
+    if (error.message.includes("timed out")) return true;
+    if (/^HTTP (429|5\d\d)$/.test(error.message)) return true;
+    if (/^HTTP \d+$/.test(error.message)) return false;
+  }
   if (!axios.isAxiosError(error)) return false;
   if (!error.response) return true;
   const status = error.response.status;
@@ -82,6 +184,22 @@ function isRetryableUploadError(error: unknown): boolean {
 }
 
 function getPartUploadErrorMessage(error: unknown, partNumber: number): string {
+  if (error instanceof DOMException && error.name === "AbortError") {
+    return "Upload canceled";
+  }
+
+  if (error instanceof Error && error.message === "ERR_NETWORK") {
+    return [
+      `Network error while uploading part ${partNumber}.`,
+      "Browser reported: ERR_NETWORK.",
+      "Check the R2 bucket CORS AllowedOrigins/AllowedMethods/AllowedHeaders and the presigned upload URL.",
+    ].join(" ");
+  }
+
+  if (error instanceof Error && /^HTTP \d+$/.test(error.message)) {
+    return `Upload part ${partNumber} failed with ${error.message}`;
+  }
+
   if (axios.isAxiosError(error) && !error.response) {
     const isOffline = typeof navigator !== "undefined" && !navigator.onLine;
     if (isOffline) return "You appear to be offline. Check your connection.";
@@ -554,6 +672,7 @@ export const uploadApi = {
 
       const resolvedPartCount = Math.ceil(file.size / resolvedPartSize);
       progressByPart = new Array(resolvedPartCount).fill(0) as number[];
+      const usedPartUrls = new Map<string, number>();
 
       const partTasks = Array.from({ length: resolvedPartCount }, (_, index) => async () => {
         const partNumber = index + 1;
@@ -571,21 +690,23 @@ export const uploadApi = {
               throw new Error(`Could not get upload URL for part ${partNumber}`);
             }
 
-            const uploadRes = await axios.put(url, chunk, {
-              signal,
-              timeout: PART_UPLOAD_TIMEOUT_MS,
-              maxBodyLength: Infinity,
-              maxContentLength: Infinity,
-              onUploadProgress: (progressEvent: AxiosProgressEvent) => {
-                updateProgress(index, progressEvent.loaded);
-              },
-            });
-            updateProgress(index, chunk.size);
-
-            const etag = readHeader(uploadRes.headers, "etag")?.replace(/^"|"$/g, "");
-            if (!etag) {
-              throw new Error(`Upload part ${partNumber} completed without an ETag`);
+            const uploadUrl = assertUsableUploadUrl(url, partNumber);
+            const existingPartNumber = usedPartUrls.get(uploadUrl);
+            if (existingPartNumber !== undefined && existingPartNumber !== partNumber) {
+              throw new Error(
+                `Upload URL for part ${partNumber} was already issued for part ${existingPartNumber}`,
+              );
             }
+            usedPartUrls.set(uploadUrl, partNumber);
+
+            const etag = await putPresignedPart(
+              uploadUrl,
+              chunk,
+              partNumber,
+              signal,
+              (loaded) => updateProgress(index, loaded),
+            );
+            updateProgress(index, chunk.size);
 
             return { ETag: etag, PartNumber: partNumber };
           } catch (error) {
