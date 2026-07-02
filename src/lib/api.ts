@@ -1,9 +1,11 @@
 import axios, {
   AxiosError,
   AxiosInstance,
+  AxiosResponse,
   AxiosProgressEvent,
   InternalAxiosRequestConfig,
 } from "axios";
+import { UPLOAD_LIMITS } from "@/helper/data_helper";
 
 /* =========================
    CONFIG
@@ -27,6 +29,34 @@ type QueueItem = {
   resolve: () => void;
   reject: (error: unknown) => void;
 };
+
+type UploadApiResponse = AxiosResponse<Record<string, unknown>>;
+
+type MultipartInitiateData = {
+  uploadId?: string;
+  key?: string;
+  partSize?: number;
+  uploadSessionId?: string;
+  sessionId?: string;
+  file?: { uploadSessionId?: string };
+};
+
+type MultipartPartUrlData = {
+  url?: string;
+  uploadUrl?: string;
+  presignedUrl?: string;
+};
+
+function unwrapData<T = Record<string, unknown>>(payload: unknown): T {
+  const root = payload as { data?: unknown } | undefined;
+  return ((root?.data ?? payload ?? {}) as T);
+}
+
+function readHeader(headers: AxiosResponse["headers"], name: string): string | undefined {
+  const value = headers[name] ?? headers[name.toLowerCase()];
+  if (Array.isArray(value)) return value[0];
+  return typeof value === "string" ? value : undefined;
+}
 
 /* =========================
    SINGLETON STATE
@@ -386,7 +416,11 @@ export const uploadApi = {
     folderId?: string,
     onProgress?: (progress: number) => void,
     signal?: AbortSignal,
-  ) => {
+  ): Promise<UploadApiResponse> => {
+    if (file.size > UPLOAD_LIMITS.MULTIPART_THRESHOLD) {
+      return uploadApi.uploadMultipartFile(file, folderId, onProgress, signal);
+    }
+
     const formData = new FormData();
     formData.append("file", file);
     if (folderId) formData.append("folderId", folderId);
@@ -405,6 +439,114 @@ export const uploadApi = {
         }
       },
     });
+  },
+
+  uploadMultipartFile: async (
+    file: File,
+    folderId?: string,
+    onProgress?: (progress: number) => void,
+    signal?: AbortSignal,
+  ): Promise<UploadApiResponse> => {
+    const contentType = file.type || "application/octet-stream";
+    const partSize = UPLOAD_LIMITS.PART_SIZE;
+    const partCount = Math.ceil(file.size / partSize);
+    const progressByPart = new Array(partCount).fill(0) as number[];
+    let uploadId = "";
+    let key = "";
+
+    const updateProgress = (partIndex: number, loaded: number) => {
+      progressByPart[partIndex] = loaded;
+      if (!onProgress) return;
+      const uploadedBytes = progressByPart.reduce((sum, value) => sum + value, 0);
+      onProgress(Math.min(99, Math.round((uploadedBytes * 100) / file.size)));
+    };
+
+    try {
+      const initiateRes = await uploadApi.initiateMultipart({
+        filename: file.name,
+        contentType,
+        size: file.size,
+        folderId,
+        partSize,
+      });
+      const initiateData = unwrapData<MultipartInitiateData>(initiateRes.data);
+      uploadId = initiateData.uploadId ?? "";
+      key = initiateData.key ?? "";
+      const resolvedPartSize = initiateData.partSize ?? partSize;
+
+      if (!uploadId || !key) {
+        throw new Error("Could not start multipart upload");
+      }
+
+      const partTasks = Array.from({ length: partCount }, (_, index) => async () => {
+        const partNumber = index + 1;
+        const start = index * resolvedPartSize;
+        const end = Math.min(start + resolvedPartSize, file.size);
+        const chunk = file.slice(start, end);
+        const partUrlRes = await uploadApi.getPartUrl({ uploadId, key, partNumber });
+        const partUrlData = unwrapData<MultipartPartUrlData>(partUrlRes.data);
+        const url = partUrlData.url ?? partUrlData.uploadUrl ?? partUrlData.presignedUrl;
+
+        if (!url) {
+          throw new Error(`Could not get upload URL for part ${partNumber}`);
+        }
+
+        const uploadRes = await axios.put(url, chunk, {
+          signal,
+          headers: { "Content-Type": contentType },
+          onUploadProgress: (progressEvent: AxiosProgressEvent) => {
+            updateProgress(index, progressEvent.loaded);
+          },
+        });
+        updateProgress(index, chunk.size);
+
+        const etag = readHeader(uploadRes.headers, "etag")?.replace(/^"|"$/g, "");
+        if (!etag) {
+          throw new Error(`Upload part ${partNumber} completed without an ETag`);
+        }
+
+        return { ETag: etag, PartNumber: partNumber };
+      });
+
+      const parts: { ETag: string; PartNumber: number }[] = new Array(partCount);
+      let next = 0;
+      async function worker() {
+        while (next < partTasks.length) {
+          const index = next++;
+          parts[index] = await partTasks[index]();
+        }
+      }
+
+      await Promise.all(
+        Array.from({ length: Math.min(UPLOAD_LIMITS.MAX_CONCURRENT_PARTS, partTasks.length) }, worker),
+      );
+
+      const completeRes = await uploadApi.completeMultipart({ uploadId, key, parts });
+      onProgress?.(100);
+
+      const completePayload = unwrapData<Record<string, unknown>>(completeRes.data);
+      const uploadSessionId =
+        (completePayload.uploadSessionId as string | undefined) ??
+        (initiateData.uploadSessionId ?? initiateData.sessionId ?? initiateData.file?.uploadSessionId);
+
+      return {
+        ...completeRes,
+        data: {
+          ...completePayload,
+          key: (completePayload.key as string | undefined) ?? key,
+          ...(uploadSessionId ? { uploadSessionId } : {}),
+        },
+      };
+    } catch (error) {
+      if (uploadId && key) {
+        try {
+          await uploadApi.abortMultipart({ uploadId, key });
+        } catch {
+          // The original upload error is more useful to surface.
+        }
+      }
+      throw error;
+    }
   },
 
   getPresignedUrl: (data: {
