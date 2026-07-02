@@ -175,6 +175,20 @@ type SendTransferResponse = Partial<Transfer> & {
 
 type SendPayload = Parameters<typeof transfersApi.send>[0];
 
+type UploadResponseData = {
+  id?: string;
+  _id?: string;
+  fileId?: string;
+  key?: string;
+  uploadSessionId?: string;
+  file?: {
+    id?: string;
+    _id?: string;
+    key?: string;
+    uploadSessionId?: string;
+  };
+};
+
 interface CompletedTransferSummary {
   method: SendMethod;
   title: string;
@@ -593,7 +607,7 @@ export default function SendPage() {
     try {
       patchFile(sf.id, { status: "uploading", progress: 0 });
       const res = await uploadApi.uploadFile(sf.file, undefined, (progress) => patchFile(sf.id, { progress }));
-      const d = res.data?.data ?? res.data ?? {};
+      const d = (res.data?.data ?? res.data ?? {}) as UploadResponseData;
       const fileId =
         d?.file?._id?.toString() ?? d?.file?.id?.toString() ??
         d?._id?.toString() ?? d?.id?.toString() ?? d?.fileId?.toString();
