@@ -629,13 +629,18 @@ export const uploadApi = {
       });
 
       const metadataPayload = unwrapData<Record<string, unknown>>(metadataRes.data);
+      const normalizedPayload = {
+        ...metadataPayload,
+        key: (metadataPayload.key as string | undefined) ?? key,
+        ...(uploadSessionId ? { uploadSessionId } : {}),
+      };
 
       return {
         ...metadataRes,
         data: {
-          ...metadataPayload,
-          key: (metadataPayload.key as string | undefined) ?? key,
-          ...(uploadSessionId ? { uploadSessionId } : {}),
+          success: true,
+          message: "File uploaded successfully",
+          data: normalizedPayload,
         },
       };
     } catch (error) {
@@ -673,7 +678,6 @@ export const uploadApi = {
     mimeType:  data.contentType,
     fileSize:  data.size,
     folderId:  data.folderId,
-    partCount: Math.ceil(data.size / (data.partSize ?? 50 * 1024 * 1024)),
   }),
 
   completeMultipart: (data: {
