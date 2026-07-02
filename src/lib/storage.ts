@@ -29,11 +29,21 @@ export function readStorageUsed(payload: unknown): number {
   const storage = asRecord(item.storage);
   const summary = asRecord(item.summary);
   const usage = asRecord(item.usage);
+  const quota = asRecord(item.quota);
 
   return readNumber(
     item.usedBytes,
     storage.usedBytes,
     usage.usedBytes,
+    quota.usedBytes,
+    item.bytesUsed,
+    storage.bytesUsed,
+    usage.bytesUsed,
+    item.usageBytes,
+    storage.usageBytes,
+    usage.usageBytes,
+    item.totalBytes,
+    storage.totalBytes,
     summary.totalUsedBytes,
     summary.totalSizeBytes,
     item.totalUsedBytes,
@@ -52,11 +62,22 @@ export function readStorageQuota(payload: unknown): number {
   const storage = asRecord(item.storage);
   const summary = asRecord(item.summary);
   const usage = asRecord(item.usage);
+  const quota = asRecord(item.quota);
 
   return readNumber(
     item.quotaBytes,
     storage.quotaBytes,
     usage.quotaBytes,
+    quota.quotaBytes,
+    quota.limitBytes,
+    quota.bytes,
+    item.limitBytes,
+    storage.limitBytes,
+    usage.limitBytes,
+    item.maxBytes,
+    storage.maxBytes,
+    item.allocatedBytes,
+    storage.allocatedBytes,
     summary.totalQuotaBytes,
     summary.totalAllocatedBytes,
     item.totalQuotaBytes,

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import AuthGuard from "@/components/auth/AuthGuard";
+import { useAuth } from "@/contexts/AuthContext";
 import { notificationsApi } from "@/lib/api";
 import { Notification } from "@/types";
 import { Button, EmptyState } from "@/components/ui";
@@ -64,16 +65,19 @@ function getConfig(type: string): NotifConfig {
 /* ─────────────────────────────────────────────────── */
 
 export default function NotificationsPage() {
+  const { user } = useAuth();
   const [notifs, setNotifs] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState(false);
 
+  const currentUserId = user?.id ?? (user as { _id?: string } | null)?._id;
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const res = await notificationsApi.list();
-      const next = getNotificationsFromResponse(res.data);
+      const next = getNotificationsFromResponse(res.data, { currentUserId });
       setNotifs(next);
       setSelectedIds((prev) => {
         if (prev.size === 0) return prev;
@@ -86,7 +90,7 @@ export default function NotificationsPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [currentUserId]);
 
   useEffect(() => {
     Promise.resolve().then(load);
@@ -102,8 +106,11 @@ export default function NotificationsPage() {
   }
 
   async function markAllRead() {
+    const unreadIds = notifs.filter((n) => !n.isRead).map((n) => n.id);
+    if (unreadIds.length === 0) return;
+
     try {
-      await notificationsApi.markAllRead();
+      await notificationsApi.bulkMarkRead(unreadIds);
       setNotifs((prev) => prev.map((n) => ({ ...n, isRead: true })));
       showToast.success("All notifications marked as read");
     } catch (err) {

@@ -91,7 +91,7 @@ export default function DomainsPage() {
           {showAddForm && (
             <div className="rounded-2xl border border-orange-200 bg-orange-50/60 p-5 dark:border-orange-800/40 dark:bg-orange-900/10">
               <h3 className="mb-3 font-semibold text-gray-900 dark:text-white">Add Custom Domain</h3>
-              <div className="flex gap-3">
+              <div className="flex flex-col gap-3">
                 <input type="text" placeholder="yourdomain.com" value={newDomain} onChange={(e) => setNewDomain(e.target.value)}
                   className="flex-1 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm outline-none focus:border-orange-400 dark:border-zinc-700 dark:bg-zinc-900 dark:text-white" />
                 <Button className="rounded-xl">Verify</Button>

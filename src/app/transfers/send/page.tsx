@@ -68,7 +68,7 @@ import {
   getTransfersFromResponse,
   getTransferTotalSize,
 } from "@/lib/transfers";
-import { handleApiError } from "@/lib/error-handler";
+import { getErrorMessage, handleApiError } from "@/lib/error-handler";
 import { transfersApi, uploadApi } from "@/lib/api";
 import { showToast } from "@/lib/toast";
 import StoragePickerModal, { type PickedFile } from "@/components/modals/StoragePickerModal";
@@ -138,6 +138,7 @@ type SendPhase  = "idle" | "uploading" | "creating" | "done";
 /** Metadata for files already in storage (pre-selected from Files page) */
 interface PreloadedFile {
   id: string;
+  _id?: string;
   name: string;
   size: number;
   mimeType: string;
@@ -172,6 +173,37 @@ type SendTransferResponse = Partial<Transfer> & {
   shortCode?: string;
 };
 
+type SendPayload = Parameters<typeof transfersApi.send>[0];
+
+interface CompletedTransferSummary {
+  method: SendMethod;
+  title: string;
+  recipients: string[];
+  totalFileCount: number;
+  totalSize: number;
+  link: string;
+}
+
+function extractPreloadedFileId(file: Partial<PreloadedFile>): string {
+  const id = file.id ?? file._id;
+  if (typeof id === "string") return id;
+  if (id && typeof id === "object" && "toString" in id) return String(id);
+  return "";
+}
+
+function normalizePreloadedFile(file: Partial<PreloadedFile>): PreloadedFile | null {
+  const id = extractPreloadedFileId(file);
+  if (!id || !file.name) return null;
+  return {
+    id,
+    name: file.name,
+    size: file.size ?? 0,
+    mimeType: file.mimeType ?? "",
+    extension: file.extension ?? "",
+    ...(file.relativePath ? { relativePath: file.relativePath } : {}),
+  };
+}
+
 function transferShareText(url: string) {
   return `Here is the secure Jai Export transfer link: ${url}`;
 }
@@ -185,6 +217,10 @@ function shareHref(kind: "email" | "whatsapp" | "sms", url: string) {
     return `https://wa.me/?text=${encodeURIComponent(text)}`;
   }
   return `sms:?&body=${encodeURIComponent(text)}`;
+}
+
+function qrImageUrl(url: string, size = 320) {
+  return `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&margin=16&data=${encodeURIComponent(url)}`;
 }
 
 /* ──────────────────────────────────────────
@@ -259,10 +295,10 @@ function fileIcon(file: File) {
   if (t.startsWith("video/")) return <Video   size={16} className="text-purple-500" />;
   if (t.startsWith("audio/")) return <Music   size={16} className="text-pink-500" />;
   if (t.includes("pdf"))      return <FileText size={16} className="text-red-500" />;
-  if (t.includes("zip") || t.includes("rar") || t.includes("7z")) return <Archive size={16} className="text-amber-500" />;
+  if (t.includes("zip") || t.includes("rar") || t.includes("7z")) return <Archive size={16} className="text-teal-500" />;
   if (t.includes("word") || t.includes("document"))               return <FileText size={16} className="text-blue-600" />;
   if (t.includes("excel") || t.includes("sheet"))                 return <Table2   size={16} className="text-green-600" />;
-  if (t.includes("powerpoint") || t.includes("presentation"))     return <Monitor  size={16} className="text-orange-500" />;
+  if (t.includes("powerpoint") || t.includes("presentation"))     return <Monitor  size={16} className="text-emerald-500" />;
   if (t.startsWith("text/"))  return <Code size={16} className="text-cyan-500" />;
   return <File size={16} className="text-gray-400" />;
 }
@@ -284,11 +320,11 @@ function ProgressFill({ value, className }: { value: number; className: string }
 function SectionHeader({ step, label, icon }: { step: number; label: string; icon: React.ReactNode }) {
   return (
     <div className="mb-4 flex items-center gap-3">
-      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-orange-500 text-[11px] font-bold text-white shadow-sm shadow-orange-500/40">
+      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-[11px] font-bold text-white shadow-sm shadow-emerald-500/40">
         {step}
       </div>
       <div className="flex items-center gap-1.5">
-        <span className="text-orange-500">{icon}</span>
+        <span className="text-emerald-500">{icon}</span>
         <span className="text-sm font-bold text-(--text)">{label}</span>
       </div>
     </div>
@@ -316,7 +352,7 @@ function StepDot({ n, label, active, done }: { n: number; label: string; active:
       <div className={[
         "flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold transition-all duration-300",
         done   ? "bg-emerald-500 text-white shadow-sm shadow-emerald-500/30" :
-        active ? "bg-orange-500 text-white shadow-sm shadow-orange-500/30" :
+        active ? "bg-emerald-500 text-white shadow-sm shadow-emerald-500/30" :
                  "bg-gray-100 text-gray-400 dark:bg-zinc-800 dark:text-zinc-500",
       ].join(" ")}>
         {done ? <Check size={13} strokeWidth={2.5} /> : n}
@@ -370,8 +406,10 @@ export default function SendPage() {
   const [privacy, setPrivacy]                 = useState<"public" | "private" | "specific">("public");
   const [sendPhase, setSendPhase]     = useState<SendPhase>("idle");
   const [sentSuccess, setSentSuccess] = useState(false);
+  const [completedTransfer, setCompletedTransfer] = useState<CompletedTransferSummary | null>(null);
   const [generatedLink, setGeneratedLink] = useState("");
   const [linkCopied, setLinkCopied]   = useState(false);
+  const [qrDownloading, setQrDownloading] = useState(false);
 
   const [showPicker, setShowPicker] = useState(false);
 
@@ -389,10 +427,14 @@ export default function SendPage() {
     if (raw) {
       sessionStorage.removeItem("pending_send");
       try {
-        const parsed: PreloadedFile[] = JSON.parse(raw);
+        const parsed: Partial<PreloadedFile>[] = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length > 0) {
           queueMicrotask(() => {
-            setPreloadedFiles(parsed.filter((file) => file?.id && file?.name));
+            setPreloadedFiles(
+              parsed
+                .map(normalizePreloadedFile)
+                .filter((file): file is PreloadedFile => file !== null),
+            );
           });
         }
       } catch { /* ignore malformed data */ }
@@ -516,6 +558,30 @@ export default function SendPage() {
     }
   }
 
+  async function downloadQrCode() {
+    const qrLink = completedTransfer?.link || generatedLink;
+    if (!qrLink) return;
+    const url = qrImageUrl(qrLink, 640);
+    setQrDownloading(true);
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error("QR download failed");
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = objectUrl;
+      a.download = `${(completedTransfer?.title || title || "transfer").replace(/[^a-z0-9_-]+/gi, "-").replace(/^-|-$/g, "") || "transfer"}-qr.png`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch {
+      window.open(url, "_blank", "noopener,noreferrer");
+    } finally {
+      setQrDownloading(false);
+    }
+  }
+
   const canSend = () => {
     if (files.length === 0 && preloadedFiles.length === 0) return false;
     if (method === "email" && emails.length === 0) return false;
@@ -567,7 +633,10 @@ export default function SendPage() {
       }
       setSendPhase("creating");
       const uploaded = results as { key: string; fileId: string; uploadSessionId?: string }[];
-      const resolvedTitle = title.trim() || (files[0]?.file.name.replace(/\.[^/.]+$/, "") ?? "Transfer");
+      const resolvedTitle = title.trim()
+        || files[0]?.file.name.replace(/\.[^/.]+$/, "")
+        || preloadedFiles[0]?.name.replace(/\.[^/.]+$/, "")
+        || "Transfer";
 
       /* Build fileId → relativePath map for locally-uploaded folder files */
       const relativePaths: Record<string, string> = {};
@@ -580,10 +649,10 @@ export default function SendPage() {
         if (rp && fid && rp.includes("/")) relativePaths[fid] = rp;
       });
 
-      const payload: Parameters<typeof import("@/lib/api").transfersApi.send>[0] = {
+      const payload: SendPayload = {
         title: resolvedTitle,
         /* Combine pre-loaded DB ids with newly uploaded ids */
-        fileIds:    [...preloadedFiles.map((f) => f.id), ...uploaded.map((r) => r.fileId)],
+        fileIds:    [...preloadedFiles.map((f) => f.id), ...uploaded.map((r) => r.fileId)].filter(Boolean),
         fileKeys:   uploaded.map((r) => r.key).filter(Boolean),
         ...(Object.keys(relativePaths).length > 0 ? { relativePaths } : {}),
         totalSize:  totalSize,
@@ -593,7 +662,43 @@ export default function SendPage() {
         ...(passwordEnabled && password ? { password } : {}),
         ...(method === "email" ? { recipients: emails, ...(subject ? { subject } : {}), ...(message ? { message } : {}) } : {}),
       };
-      const res = await transfersApi.send(payload);
+
+      let res;
+      try {
+        res = await transfersApi.send(payload);
+      } catch (err) {
+        const msg = getErrorMessage(err);
+        const canRetryQrAsLink = method === "qr";
+        const canRetryWithKeys =
+          preloadedFiles.length === 0 &&
+          uploaded.length > 0 &&
+          uploaded.every((file) => file.key) &&
+          msg.includes("not found or are not available to send");
+
+        if (!canRetryWithKeys && !canRetryQrAsLink) throw err;
+
+        const keyOnlyPayload: SendPayload = {
+          ...payload,
+          ...(canRetryWithKeys
+            ? {
+                fileIds: [],
+                fileKeys: uploaded.map((file) => file.key).filter(Boolean),
+              }
+            : {}),
+          ...(canRetryQrAsLink ? { method: "link" } : {}),
+        };
+
+        if (process.env.NODE_ENV === "development") {
+          console.warn("[SendPage] Retrying transfer creation", {
+            reason: canRetryQrAsLink ? "qr-as-link" : "uploaded-file-keys",
+            fileIds: payload.fileIds,
+            fileKeys: keyOnlyPayload.fileKeys,
+            method: keyOnlyPayload.method,
+          });
+        }
+
+        res = await transfersApi.send(keyOnlyPayload);
+      }
       const resData    = (res.data?.data ?? res.data) as SendTransferResponse;
       const createdTransfer = (resData.transfer ?? resData) as Transfer;
       const transferId = createdTransfer?.id ?? resData?._id ?? "";
@@ -604,6 +709,14 @@ export default function SendPage() {
         ?? (shortCode  ? `${window.location.origin}/t/${shortCode}` : null)
         ?? (transferId ? `${window.location.origin}/t/${transferId}` : "");
       setGeneratedLink(link);
+      setCompletedTransfer({
+        method,
+        title: resolvedTitle,
+        recipients: method === "email" ? [...emails] : [],
+        totalFileCount,
+        totalSize,
+        link,
+      });
       setSendPhase("done");
       setSentSuccess(true);
       if (transferId) {
@@ -649,6 +762,7 @@ export default function SendPage() {
     setFiles([]); setPreloadedFiles([]); setEmails([]); setEmailInput("");
     setTitle(""); setSubject(""); setMessage("");
     setPasswordEnabled(false); setPassword(""); setExpiry("7"); setPrivacy("public");
+    setCompletedTransfer(null);
     setGeneratedLink(""); setSentSuccess(false); setSendPhase("idle");
   }
 
@@ -693,6 +807,17 @@ export default function SendPage() {
   const overallProgress = files.length === 0 ? 0
     : Math.round(files.reduce((s, f) => s + f.progress, 0) / files.length);
   const currentMethod   = METHODS.find((m) => m.key === method)!;
+  const successSummary = completedTransfer ?? {
+    method,
+    title: title.trim() || "Transfer",
+    recipients: emails,
+    totalFileCount,
+    totalSize,
+    link: generatedLink,
+  };
+  const successMethod = successSummary.method;
+  const showGeneratedLink = Boolean(successSummary.link) && successMethod !== "email";
+  const showShareOptions = Boolean(successSummary.link) && successMethod !== "email";
 
   const folderGroups: Record<string, SendFile[]> = {};
   const rootFiles: SendFile[] = [];
@@ -705,21 +830,21 @@ export default function SendPage() {
     }
   });
 
-  const step1Done   = files.length > 0 && !isSending;
+  const step1Done   = totalFileCount > 0 && !isSending;
   const step2Done   = step1Done && (method !== "email" || emails.length > 0);
   const step3Active = step2Done;
 
   const STAT_CARDS = [
-    { label: "Total Transfers", value: stats.totalTransfers, icon: <Send size={16} />,        gradient: "from-orange-500 to-amber-500"  },
+    { label: "Total Transfers", value: stats.totalTransfers, icon: <Send size={16} />,        gradient: "from-emerald-500 to-teal-500"  },
     { label: "Self Transfers",  value: stats.selfTransfers,  icon: <RefreshCw size={16} />,   gradient: "from-purple-500 to-violet-500" },
     { label: "Total Users",     value: stats.totalUsers,     icon: <Users size={16} />,       gradient: "from-blue-500 to-blue-600"     },
     { label: "Received",        value: stats.receivedMails,  icon: <Inbox size={16} />,       gradient: "from-emerald-500 to-green-600" },
-    { label: "Starred",         value: stats.starredMails,   icon: <Star size={16} />,        gradient: "from-amber-500 to-yellow-500"  },
+    { label: "Starred",         value: stats.starredMails,   icon: <Star size={16} />,        gradient: "from-teal-500 to-lime-500"  },
     { label: "Active Links",    value: stats.activeLinks,    icon: <LinkIcon size={16} />,    gradient: "from-sky-500 to-cyan-500"      },
   ];
 
   /* ── Input base class ── */
-  const inputCls = (accent = "orange") =>
+  const inputCls = (accent = "emerald") =>
     `h-11 w-full rounded-xl border border-gray-200 bg-white px-4 text-sm text-(--text) outline-none transition-all placeholder:text-gray-400 focus:border-${accent}-400 focus:ring-3 focus:ring-${accent}-500/10 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-800 dark:focus:border-${accent}-500`;
 
   /* ══════════════════════════════════════════
@@ -733,13 +858,13 @@ export default function SendPage() {
           {/* ══════════════════════════════════════
               HERO HEADER
           ══════════════════════════════════════ */}
-          <div className="relative overflow-hidden rounded-2xl border border-orange-200/50 bg-linear-to-br from-orange-50 via-amber-50/40 to-white px-6 py-7 dark:border-orange-900/20 dark:from-orange-950/25 dark:via-amber-900/10 dark:to-zinc-900/0">
-            <div className="pointer-events-none absolute -right-16 -top-16 h-56 w-56 rounded-full bg-orange-400/10 blur-3xl" />
-            <div className="pointer-events-none absolute -bottom-10 left-20 h-40 w-40 rounded-full bg-amber-400/8 blur-2xl" />
+          <div className="relative overflow-hidden rounded-2xl border border-emerald-200/50 bg-linear-to-br from-emerald-50 via-teal-50/40 to-white px-6 py-7 dark:border-emerald-900/20 dark:from-emerald-950/25 dark:via-teal-900/10 dark:to-zinc-900/0">
+            <div className="pointer-events-none absolute -right-16 -top-16 h-56 w-56 rounded-full bg-emerald-400/10 blur-3xl" />
+            <div className="pointer-events-none absolute -bottom-10 left-20 h-40 w-40 rounded-full bg-teal-400/8 blur-2xl" />
 
             <div className="relative flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-center gap-4">
-                <div className="relative flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-linear-to-br from-orange-500 to-amber-500 text-white shadow-xl shadow-orange-500/25">
+                <div className="relative flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-linear-to-br from-emerald-500 to-teal-500 text-white shadow-xl shadow-emerald-500/25">
                   <Send size={24} />
                   <div className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-white shadow-sm dark:bg-zinc-900">
                     <div className="h-2.5 w-2.5 rounded-full bg-emerald-500" />
@@ -748,7 +873,7 @@ export default function SendPage() {
                 <div>
                   <div className="flex items-center gap-2.5">
                     <h1 className="text-xl font-extrabold tracking-tight text-(--text)">Send Files</h1>
-                    <span className="inline-flex items-center gap-1 rounded-full bg-orange-500/12 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-orange-600 dark:text-orange-400">
+                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/12 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-600 dark:text-emerald-400">
                       <Sparkles size={9} /> R2 Powered
                     </span>
                   </div>
@@ -765,7 +890,7 @@ export default function SendPage() {
                     </span>
                     <span className="h-3 w-px bg-gray-200 dark:bg-zinc-700" />
                     <span className="flex items-center gap-1 text-[11px] text-(--text-muted)">
-                      <Zap size={10} className="text-amber-500" /> Up to 10 GB
+                      <Zap size={10} className="text-teal-500" /> Up to 10 GB
                     </span>
                   </div>
                 </div>
@@ -773,7 +898,7 @@ export default function SendPage() {
 
               {!sentSuccess && (
                 <div className="flex shrink-0 items-center gap-2 rounded-2xl border border-gray-200/80 bg-white/80 px-4 py-3 shadow-sm backdrop-blur-sm dark:border-zinc-700/60 dark:bg-zinc-900/80">
-                  <StepDot n={1} label="Files" active={files.length === 0} done={step1Done} />
+                  <StepDot n={1} label="Files" active={totalFileCount === 0} done={step1Done} />
                   <div className="h-px w-6 bg-gray-200 dark:bg-zinc-700" />
                   <StepDot n={2} label="Configure" active={step1Done && !step2Done} done={step2Done} />
                   <div className="h-px w-6 bg-gray-200 dark:bg-zinc-700" />
@@ -807,75 +932,181 @@ export default function SendPage() {
               SUCCESS STATE
           ══════════════════════════════════════ */}
           {sentSuccess ? (
-            <div className="overflow-hidden rounded-2xl border border-emerald-200/60 bg-white shadow-lg shadow-emerald-500/5 dark:border-emerald-900/30 dark:bg-zinc-900">
-              <div className="h-1 w-full bg-linear-to-r from-emerald-400 via-green-400 to-teal-400" />
-              <div className="flex flex-col items-center gap-7 px-6 py-16 text-center">
-                {/* Icon */}
-                <div className="relative">
-                  <div className="flex h-24 w-24 items-center justify-center rounded-3xl bg-linear-to-br from-emerald-500 to-green-600 text-white shadow-2xl shadow-emerald-500/30">
-                    <Check size={44} strokeWidth={2.5} />
-                  </div>
-                  <div className="absolute -right-2 -top-2 flex h-7 w-7 items-center justify-center rounded-full bg-amber-400 text-white shadow-md">
-                    <Sparkles size={13} />
-                  </div>
-                  <div className="absolute -bottom-1 -left-1 flex h-6 w-6 items-center justify-center rounded-full bg-emerald-100 text-emerald-600 dark:bg-emerald-900/40 dark:text-emerald-400">
-                    <Shield size={12} />
+            <div className="overflow-hidden rounded-3xl border border-emerald-200/80 bg-white shadow-xl shadow-emerald-500/10 dark:border-emerald-900/40 dark:bg-zinc-950">
+              <div className="grid lg:grid-cols-[0.92fr_1.08fr]">
+                <div className="relative overflow-hidden bg-linear-to-br from-emerald-600 via-teal-600 to-rose-600 px-6 py-8 text-white sm:px-8 lg:px-10 lg:py-10">
+                  <div className="absolute inset-x-0 top-0 h-1 bg-linear-to-r from-lime-200 via-emerald-200 to-rose-200" />
+                  <div className="pointer-events-none absolute -right-16 -top-16 h-44 w-44 rounded-full border border-white/20" />
+                  <div className="pointer-events-none absolute -bottom-20 -left-12 h-52 w-52 rounded-full border border-white/10" />
+
+                  <div className="relative flex h-full flex-col justify-between gap-8">
+                    <div>
+                      <div className="mb-7 flex items-center justify-between gap-4">
+                        <div className="inline-flex items-center gap-2 rounded-full bg-white/12 px-3 py-1.5 text-xs font-bold text-emerald-50 ring-1 ring-white/15">
+                          <Shield size={13} /> Secure delivery
+                        </div>
+                        <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-white/12 ring-1 ring-white/15">
+                          <Sparkles size={17} />
+                        </div>
+                      </div>
+
+                      <div className="relative mb-7">
+                        <div className="flex h-24 w-24 items-center justify-center rounded-[1.75rem] bg-white text-emerald-600 shadow-2xl shadow-emerald-950/25">
+                          <Check size={46} strokeWidth={2.6} />
+                        </div>
+                        <div className="absolute left-20 top-3 flex h-8 w-8 items-center justify-center rounded-full bg-lime-300 text-emerald-900 shadow-lg">
+                          <Zap size={14} />
+                        </div>
+                      </div>
+
+                      <p className="mb-2 text-xs font-bold uppercase tracking-[0.2em] text-emerald-100/80">
+                        Transfer complete
+                      </p>
+                      <h2 className="max-w-md text-3xl font-black tracking-tight sm:text-4xl">
+                        Transfer Sent!
+                      </h2>
+                      <p className="mt-3 max-w-md text-sm leading-6 text-emerald-50/85">
+                        {successSummary.totalFileCount} file{successSummary.totalFileCount !== 1 ? "s" : ""} totaling {formatBytes(successSummary.totalSize)}
+                        {successMethod === "email"
+                          ? ` delivered to ${successSummary.recipients.length} recipient${successSummary.recipients.length !== 1 ? "s" : ""}.`
+                          : successMethod === "qr"
+                            ? " is ready as a scannable QR code."
+                            : " is ready to share with a secure link."}
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="rounded-2xl bg-white/12 p-3 ring-1 ring-white/15">
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-emerald-100/75">Files</p>
+                        <p className="mt-1 text-xl font-black">{successSummary.totalFileCount}</p>
+                      </div>
+                      <div className="rounded-2xl bg-white/12 p-3 ring-1 ring-white/15">
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-emerald-100/75">Size</p>
+                        <p className="mt-1 truncate text-xl font-black">{formatBytes(successSummary.totalSize)}</p>
+                      </div>
+                      <div className="col-span-2 rounded-2xl bg-white/12 p-3 ring-1 ring-white/15">
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-emerald-100/75">Method</p>
+                        <div className="mt-1 flex items-center gap-2 text-sm font-bold">
+                          {successMethod === "email" ? <Mail size={15} /> : successMethod === "qr" ? <QrCode size={15} /> : <LinkIcon size={15} />}
+                          {successMethod === "email" ? "Email delivery" : successMethod === "qr" ? "QR code" : "Shareable link"}
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </div>
 
-                <div className="max-w-sm">
-                  <h2 className="text-2xl font-extrabold tracking-tight text-(--text)">Transfer Sent!</h2>
-                  <p className="mt-2 text-sm text-(--text-muted)">
-                    {totalFileCount} file{totalFileCount !== 1 ? "s" : ""} ({formatBytes(totalSize)})
-                    {method === "email"
-                      ? ` delivered to ${emails.length} recipient${emails.length !== 1 ? "s" : ""}`
-                      : " ready via the link below"}
-                  </p>
-                </div>
+                <div className="flex flex-col gap-5 p-5 sm:p-7 lg:p-8">
+                  {successMethod === "email" && (
+                    <div className="overflow-hidden rounded-2xl border border-emerald-200 bg-emerald-50/70 dark:border-emerald-900/30 dark:bg-emerald-900/10">
+                      <div className="flex items-center justify-between gap-3 border-b border-emerald-200/70 bg-white/70 px-4 py-3 dark:border-emerald-900/30 dark:bg-zinc-900/50">
+                        <div className="flex items-center gap-2 text-sm font-bold text-emerald-700 dark:text-emerald-300">
+                          <span className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-500 text-white shadow-sm shadow-emerald-500/25">
+                            <Mail size={15} />
+                          </span>
+                          Email delivery
+                        </div>
+                        <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-bold text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-900/25 dark:text-emerald-300 dark:ring-emerald-900/40">
+                          {successSummary.recipients.length} sent
+                        </span>
+                      </div>
+                      <div className="grid gap-2 p-4 sm:grid-cols-2">
+                        {successSummary.recipients.map((recipient) => (
+                          <div key={recipient} className="flex min-w-0 items-center gap-3 rounded-full border border-emerald-100 bg-white px-3 py-2.5 shadow-sm dark:border-emerald-900/30 dark:bg-zinc-900">
+                            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-emerald-50 text-emerald-600 dark:bg-emerald-900/20 dark:text-emerald-300">
+                              <Check size={13} />
+                            </span>
+                            <span className="min-w-0 truncate text-sm font-semibold text-(--text)">{recipient}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
-                {generatedLink && (
-                  <div className="w-full max-w-2xl space-y-3">
-                    <div className="overflow-hidden rounded-xl border border-gray-200 bg-gray-50 dark:border-zinc-700 dark:bg-zinc-800">
-                      <div className="flex items-center gap-2 px-3 py-2.5">
-                        <LinkIcon size={13} className="shrink-0 text-emerald-500" />
-                        <a href={generatedLink} target="_blank" rel="noopener noreferrer"
-                          className="flex-1 truncate font-mono text-xs text-blue-600 hover:underline dark:text-blue-400">
-                          {generatedLink}
+                  {successMethod === "qr" && successSummary.link && (
+                    <div className="grid gap-4 rounded-2xl border border-emerald-200 bg-linear-to-br from-emerald-50 via-teal-50 to-white p-4 dark:border-emerald-900/30 dark:from-emerald-900/15 dark:via-teal-900/10 dark:to-zinc-900 sm:grid-cols-[180px_1fr]">
+                      <div className="mx-auto flex aspect-square w-full max-w-44 items-center justify-center rounded-[1.5rem] border-4 border-white bg-white p-3 shadow-xl shadow-emerald-500/15 dark:border-zinc-800">
+                        {/* eslint-disable-next-line @next/next/no-img-element -- dynamic QR service URL is not in the image allowlist */}
+                        <img
+                          src={qrImageUrl(successSummary.link, 320)}
+                          alt="Transfer QR code"
+                          className="h-full w-full"
+                        />
+                      </div>
+                      <div className="flex flex-col justify-center text-center sm:text-left">
+                        <div className="mb-2 inline-flex w-fit items-center gap-2 self-center rounded-full bg-white px-3 py-1 text-xs font-bold text-emerald-700 ring-1 ring-emerald-100 dark:bg-zinc-900 dark:text-emerald-300 dark:ring-emerald-900/40 sm:self-start">
+                          <QrCode size={13} /> QR code ready
+                        </div>
+                        <p className="text-sm leading-6 text-(--text-muted)">
+                          Scan-ready access for in-person sharing or printed handoff.
+                        </p>
+                        <button type="button" onClick={downloadQrCode} disabled={qrDownloading}
+                          className="mt-4 flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 text-sm font-bold text-white shadow-lg shadow-emerald-500/20 transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60">
+                          {qrDownloading ? <Spinner size={15} /> : <Download size={15} />} Download QR
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {showGeneratedLink && (
+                    <div className="overflow-hidden rounded-2xl border border-emerald-200 bg-white shadow-sm shadow-emerald-500/10 dark:border-emerald-900/30 dark:bg-zinc-900">
+                      <div className="flex items-center gap-3 bg-emerald-50/80 px-4 py-3 dark:bg-emerald-900/10">
+                        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-500 text-white shadow-sm shadow-emerald-500/25">
+                          <LinkIcon size={16} />
+                        </span>
+                        <a href={successSummary.link} target="_blank" rel="noopener noreferrer"
+                          className="min-w-0 flex-1 truncate font-mono text-xs font-semibold text-emerald-700 hover:underline dark:text-emerald-300">
+                          {successSummary.link}
                         </a>
                       </div>
-                      <div className="flex divide-x divide-gray-200 border-t border-gray-200 dark:divide-zinc-700 dark:border-zinc-700">
+                      <div className="flex divide-x divide-emerald-100 border-t border-emerald-100 dark:divide-emerald-900/30 dark:border-emerald-900/30">
                         <button type="button" onClick={copyLink}
-                          className="flex flex-1 items-center justify-center gap-1.5 py-2 text-xs font-semibold text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-zinc-700 dark:hover:text-gray-200">
+                          className="flex flex-1 items-center justify-center gap-2 py-3 text-xs font-bold text-emerald-700 transition-colors hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-emerald-900/20">
                           {linkCopied
                             ? <><Check size={12} className="text-emerald-500" /> Copied!</>
                             : <><Copy size={12} /> Copy Link</>}
                         </button>
                         <button type="button"
-                          onClick={() => window.open(generatedLink, "_blank", "noopener,noreferrer")}
-                          className="flex flex-1 items-center justify-center gap-1.5 py-2 text-xs font-semibold text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-zinc-700 dark:hover:text-gray-200">
+                          onClick={() => window.open(successSummary.link, "_blank", "noopener,noreferrer")}
+                          className="flex flex-1 items-center justify-center gap-2 py-3 text-xs font-bold text-emerald-700 transition-colors hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-emerald-900/20">
                           <ExternalLink size={12} /> Open
                         </button>
                       </div>
                     </div>
+                  )}
 
-                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                  {showShareOptions && (
+                    <div className="rounded-2xl border border-emerald-200 bg-emerald-50/50 p-4 dark:border-emerald-900/30 dark:bg-emerald-900/10">
+                      <div className="mb-3 flex items-center gap-2 text-sm font-bold text-(--text)">
+                        <Share2 size={15} className="text-emerald-500" /> Share transfer
+                      </div>
+                      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+                        {successMethod === "link" && (
+                          <button
+                            type="button"
+                            onClick={downloadQrCode}
+                            disabled={qrDownloading}
+                            className="flex h-11 items-center justify-center gap-2 rounded-xl border border-emerald-200 bg-white text-sm font-bold text-emerald-700 transition-colors hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-emerald-900/40 dark:bg-zinc-950 dark:text-emerald-300 dark:hover:bg-emerald-900/20"
+                          >
+                            {qrDownloading ? <Spinner size={15} /> : <QrCode size={15} />} QR Code
+                          </button>
+                        )}
                         <a
-                          href={shareHref("email", generatedLink)}
-                          className="flex h-11 items-center justify-center gap-2 rounded-xl border border-blue-200 bg-blue-50 text-sm font-semibold text-blue-700 transition-colors hover:bg-blue-100 dark:border-blue-900/40 dark:bg-blue-900/20 dark:text-blue-300"
+                          href={shareHref("email", successSummary.link)}
+                          className="flex h-11 items-center justify-center gap-2 rounded-xl border border-emerald-200 bg-white text-sm font-bold text-emerald-700 transition-colors hover:bg-emerald-100 dark:border-emerald-900/40 dark:bg-zinc-950 dark:text-emerald-300 dark:hover:bg-emerald-900/20"
                         >
-                          <Mail size={15} /> Email
+                          <Mail size={15} /> Email Link
                         </a>
                         <a
-                          href={shareHref("whatsapp", generatedLink)}
+                          href={shareHref("whatsapp", successSummary.link)}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="flex h-11 items-center justify-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 text-sm font-semibold text-emerald-700 transition-colors hover:bg-emerald-100 dark:border-emerald-900/40 dark:bg-emerald-900/20 dark:text-emerald-300"
+                          className="flex h-11 items-center justify-center gap-2 rounded-xl border border-emerald-200 bg-white text-sm font-bold text-emerald-700 transition-colors hover:bg-emerald-100 dark:border-emerald-900/40 dark:bg-zinc-950 dark:text-emerald-300 dark:hover:bg-emerald-900/20"
                         >
                           <MessageCircle size={15} /> WhatsApp
                         </a>
                         <a
-                          href={shareHref("sms", generatedLink)}
-                          className="flex h-11 items-center justify-center gap-2 rounded-xl border border-gray-200 bg-white text-sm font-semibold text-gray-700 transition-colors hover:bg-gray-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-gray-200 dark:hover:bg-zinc-800"
+                          href={shareHref("sms", successSummary.link)}
+                          className="flex h-11 items-center justify-center gap-2 rounded-xl border border-emerald-200 bg-white text-sm font-bold text-emerald-700 transition-colors hover:bg-emerald-100 dark:border-emerald-900/40 dark:bg-zinc-950 dark:text-emerald-300 dark:hover:bg-emerald-900/20"
                         >
                           <Smartphone size={15} /> SMS
                         </a>
@@ -883,17 +1114,23 @@ export default function SendPage() {
                           type="button"
                           onClick={shareGeneratedLink}
                           disabled={typeof navigator === "undefined" || !navigator.share}
-                          className="flex h-11 items-center justify-center gap-2 rounded-xl border border-orange-200 bg-orange-50 text-sm font-semibold text-orange-700 transition-colors hover:bg-orange-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-orange-900/40 dark:bg-orange-900/20 dark:text-orange-300"
+                          className="flex h-11 items-center justify-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 text-sm font-bold text-emerald-700 transition-colors hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-emerald-900/40 dark:bg-emerald-900/20 dark:text-emerald-300"
                         >
                           <Share2 size={15} /> Share
                         </button>
+                      </div>
                     </div>
-                  </div>
-                )}
+                  )}
 
-                <Button variant="secondary" onClick={resetForm} leftIcon={<RefreshCw size={14} />} rounded="full">
-                  Send More Files
-                </Button>
+                  <div className="flex flex-col-reverse gap-3 pt-1 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="text-xs text-(--text-muted)">
+                      Your transfer is saved and ready from the transfers view.
+                    </p>
+                    <Button variant="secondary" onClick={resetForm} leftIcon={<RefreshCw size={14} />} rounded="full">
+                      Send More Files
+                    </Button>
+                  </div>
+                </div>
               </div>
             </div>
           ) : (
@@ -907,31 +1144,31 @@ export default function SendPage() {
 
                 {/* Upload progress banner */}
                 {isSending && (
-                  <div className="overflow-hidden rounded-xl border border-orange-200/70 bg-orange-50 dark:border-orange-900/30 dark:bg-orange-900/10">
+                  <div className="overflow-hidden rounded-xl border border-emerald-200/70 bg-emerald-50 dark:border-emerald-900/30 dark:bg-emerald-900/10">
                     <div className="flex items-center justify-between px-4 py-3">
                       <div className="flex items-center gap-2.5">
-                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-orange-500/15">
-                          <CloudUpload size={15} className="animate-pulse text-orange-500" />
+                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/15">
+                          <CloudUpload size={15} className="animate-pulse text-emerald-500" />
                         </div>
                         <div>
-                          <p className="text-sm font-semibold text-orange-700 dark:text-orange-300">
-                            {sendPhase === "uploading"
+                          <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-300">
+                            {sendPhase === "uploading" && files.length > 0
                               ? `Uploading files… ${uploadedCount} of ${files.length} done`
                               : "Creating transfer record…"}
                           </p>
-                          <p className="text-[11px] text-orange-600/70 dark:text-orange-400/70">
-                            {sendPhase === "uploading" ? `${formatBytes(totalSize)} · Cloudflare R2` : "Almost there…"}
+                          <p className="text-[11px] text-emerald-600/70 dark:text-emerald-400/70">
+                            {sendPhase === "uploading" && files.length > 0 ? `${formatBytes(totalSize)} · Cloudflare R2` : "Almost there…"}
                           </p>
                         </div>
                       </div>
-                      <span className="text-lg font-bold tabular-nums text-orange-600 dark:text-orange-400">
-                        {sendPhase === "creating" ? "100" : overallProgress}%
+                      <span className="text-lg font-bold tabular-nums text-emerald-600 dark:text-emerald-400">
+                        {sendPhase === "creating" || files.length === 0 ? "100" : overallProgress}%
                       </span>
                     </div>
-                    <div className="h-1.5 bg-orange-100 dark:bg-orange-900/40">
+                    <div className="h-1.5 bg-emerald-100 dark:bg-emerald-900/40">
                       <ProgressFill
-                        value={sendPhase === "creating" ? 100 : overallProgress}
-                        className="h-full bg-linear-to-r from-orange-500 to-amber-400 transition-all duration-500"
+                        value={sendPhase === "creating" || files.length === 0 ? 100 : overallProgress}
+                        className="h-full bg-linear-to-r from-emerald-500 to-teal-400 transition-all duration-500"
                       />
                     </div>
                   </div>
@@ -954,8 +1191,8 @@ export default function SendPage() {
                         isSending
                           ? "cursor-default border-gray-200 bg-gray-50/50 dark:border-zinc-700 dark:bg-zinc-800/30"
                           : isDragging
-                            ? "scale-[1.005] cursor-copy border-orange-400 bg-orange-500/5 shadow-lg shadow-orange-500/10"
-                            : "cursor-pointer border-gray-200 hover:border-orange-300 hover:bg-orange-50/40 dark:border-zinc-700 dark:hover:border-orange-600/50",
+                            ? "scale-[1.005] cursor-copy border-emerald-400 bg-emerald-500/5 shadow-lg shadow-emerald-500/10"
+                            : "cursor-pointer border-gray-200 hover:border-emerald-300 hover:bg-emerald-50/40 dark:border-zinc-700 dark:hover:border-emerald-600/50",
                       ].join(" ")}
                     >
                       <input ref={fileInputRef} type="file" multiple aria-label="Select files to upload"
@@ -963,11 +1200,11 @@ export default function SendPage() {
                       <input ref={folderRefCallback} type="file" aria-label="Select a folder to upload" multiple
                         className="hidden" onClick={(e) => e.stopPropagation()} onChange={onFolderSelect} />
 
-                      {files.length === 0 ? (
+                      {totalFileCount === 0 ? (
                         <div className="flex flex-col items-center justify-center gap-4 px-6 py-14 text-center">
                           <div className={[
                             "flex h-16 w-16 items-center justify-center rounded-2xl transition-all duration-300",
-                            isDragging ? "scale-110 bg-orange-500 text-white shadow-xl shadow-orange-500/30" : "bg-orange-50 text-orange-500 dark:bg-orange-500/10",
+                            isDragging ? "scale-110 bg-emerald-500 text-white shadow-xl shadow-emerald-500/30" : "bg-emerald-50 text-emerald-500 dark:bg-emerald-500/10",
                           ].join(" ")}>
                             {isDragging ? <FolderOpen size={30} /> : <CloudUpload size={30} />}
                           </div>
@@ -999,15 +1236,15 @@ export default function SendPage() {
                           {/* File list header */}
                           <div className="mb-3 flex items-center justify-between">
                             <div className="flex items-center gap-2">
-                              <span className="flex h-6 w-6 items-center justify-center rounded-md bg-orange-500/10 text-[11px] font-bold text-orange-600">
-                                {files.length}
+                              <span className="flex h-6 w-6 items-center justify-center rounded-md bg-emerald-500/10 text-[11px] font-bold text-emerald-600">
+                                {totalFileCount}
                               </span>
                               <span className="text-sm font-semibold text-(--text)">
-                                file{files.length !== 1 ? "s" : ""}
+                                file{totalFileCount !== 1 ? "s" : ""}
                                 {folderCount > 0 && <span className="ml-1 font-normal text-(--text-muted)">in {folderCount} folder{folderCount !== 1 ? "s" : ""}</span>}
                               </span>
                               <span className="text-xs text-(--text-muted)">· {formatBytes(totalSize)}</span>
-                              {isSending && <span className="text-xs text-orange-500">· {uploadedCount} uploaded</span>}
+                              {isSending && <span className="text-xs text-emerald-500">· {uploadedCount} uploaded</span>}
                               {errorCount > 0 && <span className="text-xs text-red-500">· {errorCount} failed</span>}
                             </div>
                             {!isSending && (
@@ -1024,7 +1261,7 @@ export default function SendPage() {
                                 </button>
                                 <button type="button"
                                   onClick={(e) => { e.stopPropagation(); setShowPicker(true); }}
-                                  className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-orange-600 transition-colors hover:bg-orange-50 dark:text-orange-400 dark:hover:bg-orange-900/20">
+                                  className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-emerald-600 transition-colors hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-900/20">
                                   <FolderOpen size={12} /> From Storage
                                 </button>
                               </div>
@@ -1074,7 +1311,7 @@ export default function SendPage() {
                             {/* ── Folders section ── */}
                             {Object.keys(folderGroups).length > 0 && (
                               <div className="mb-0.5 flex items-center gap-1.5 px-1 pt-1">
-                                <Folder size={11} className="text-orange-400" />
+                                <Folder size={11} className="text-emerald-400" />
                                 <span className="text-[10px] font-bold uppercase tracking-wider text-(--text-muted)">
                                   Folders ({Object.keys(folderGroups).length})
                                 </span>
@@ -1102,7 +1339,7 @@ export default function SendPage() {
                                         ? <CheckCircle size={12} className="shrink-0 text-emerald-500" />
                                         : errInGroup > 0
                                           ? <AlertCircle size={12} className="shrink-0 text-red-500" />
-                                          : <Folder size={12} className="shrink-0 text-orange-400" />}
+                                          : <Folder size={12} className="shrink-0 text-emerald-400" />}
                                       <span className="flex-1 truncate text-xs font-semibold text-(--text)">{folderName}</span>
                                       <span className="shrink-0 text-[10px] text-(--text-muted)">
                                         {groupFiles.length} files · {formatBytes(groupSize)}
@@ -1134,13 +1371,13 @@ export default function SendPage() {
                                                 : <p className="text-[10px] text-(--text-muted)">{formatBytes(sf.file.size)}</p>}
                                               {sf.status === "uploading" && (
                                                 <div className="mt-1 h-1 overflow-hidden rounded-full bg-gray-100 dark:bg-zinc-700">
-                                                  <ProgressFill value={sf.progress} className="h-full rounded-full bg-linear-to-r from-orange-500 to-amber-400 transition-all" />
+                                                  <ProgressFill value={sf.progress} className="h-full rounded-full bg-linear-to-r from-emerald-500 to-teal-400 transition-all" />
                                                 </div>
                                               )}
                                             </div>
                                             {sf.status === "done"      && <CheckCircle size={12} className="shrink-0 text-emerald-500" />}
                                             {sf.status === "error"     && <AlertCircle  size={12} className="shrink-0 text-red-500" />}
-                                            {sf.status === "uploading" && <span className="shrink-0 text-[10px] font-bold tabular-nums text-orange-500">{sf.progress}%</span>}
+                                            {sf.status === "uploading" && <span className="shrink-0 text-[10px] font-bold tabular-nums text-emerald-500">{sf.progress}%</span>}
                                             {sf.status === "idle" && !isSending && (
                                               <button type="button" aria-label={`Remove ${sf.file.name}`}
                                                 onClick={(e) => { e.stopPropagation(); setFiles((p) => p.filter((f) => f.id !== sf.id)); }}
@@ -1180,13 +1417,13 @@ export default function SendPage() {
                                     : <p className="text-[10px] text-(--text-muted)">{formatBytes(sf.file.size)}</p>}
                                   {sf.status === "uploading" && (
                                     <div className="mt-1 h-1 overflow-hidden rounded-full bg-gray-100 dark:bg-zinc-700">
-                                      <ProgressFill value={sf.progress} className="h-full rounded-full bg-linear-to-r from-orange-500 to-amber-400 transition-all" />
+                                      <ProgressFill value={sf.progress} className="h-full rounded-full bg-linear-to-r from-emerald-500 to-teal-400 transition-all" />
                                     </div>
                                   )}
                                 </div>
                                 {sf.status === "done"      && <CheckCircle size={13} className="shrink-0 text-emerald-500" />}
                                 {sf.status === "error"     && <AlertCircle  size={13} className="shrink-0 text-red-500" />}
-                                {sf.status === "uploading" && <span className="shrink-0 text-[11px] font-bold tabular-nums text-orange-500">{sf.progress}%</span>}
+                                {sf.status === "uploading" && <span className="shrink-0 text-[11px] font-bold tabular-nums text-emerald-500">{sf.progress}%</span>}
                                 {sf.status === "idle" && !isSending && (
                                   <button type="button" aria-label={`Remove ${sf.file.name}`}
                                     onClick={(e) => { e.stopPropagation(); setFiles((p) => p.filter((f) => f.id !== sf.id)); }}
@@ -1257,7 +1494,7 @@ export default function SendPage() {
                         onChange={(e) => setTitle(e.target.value)}
                         disabled={isSending}
                         placeholder="e.g. Project Assets, Vacation Photos…"
-                        className={inputCls("orange")}
+                        className={inputCls("emerald")}
                       />
                       <p className="mt-1.5 flex items-center gap-1 text-[11px] text-(--text-muted)">
                         <Info size={9} /> Shown on the download page — auto-filled from first file
@@ -1339,8 +1576,8 @@ export default function SendPage() {
                             className={[
                               "rounded-xl border py-2.5 text-sm font-semibold transition-all duration-150 disabled:opacity-50",
                               expiry === d
-                                ? "border-orange-400 bg-orange-500 text-white shadow-sm shadow-orange-500/25"
-                                : "border-gray-200 bg-gray-50 text-(--text-muted) hover:border-orange-300 hover:bg-orange-50/60 dark:border-zinc-700 dark:bg-zinc-800",
+                                ? "border-emerald-400 bg-emerald-500 text-white shadow-sm shadow-emerald-500/25"
+                                : "border-gray-200 bg-gray-50 text-(--text-muted) hover:border-emerald-300 hover:bg-emerald-50/60 dark:border-zinc-700 dark:bg-zinc-800",
                             ].join(" ")}>
                             {d === "1" ? "1 day" : `${d}d`}
                           </button>
@@ -1361,8 +1598,8 @@ export default function SendPage() {
                             className={[
                               "flex flex-col items-center gap-1.5 rounded-xl border px-2 py-3 text-center transition-all duration-150 disabled:opacity-50",
                               privacy === opt.value
-                                ? "border-orange-400 bg-orange-500/8 text-orange-600 dark:bg-orange-500/10 dark:text-orange-400"
-                                : "border-gray-200 bg-gray-50 text-(--text-muted) hover:border-orange-200 hover:bg-orange-50/40 dark:border-zinc-700 dark:bg-zinc-800",
+                                ? "border-emerald-400 bg-emerald-500/8 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400"
+                                : "border-gray-200 bg-gray-50 text-(--text-muted) hover:border-emerald-200 hover:bg-emerald-50/40 dark:border-zinc-700 dark:bg-zinc-800",
                             ].join(" ")}>
                             {opt.icon}
                             <span className="text-[11px] font-bold">{opt.label}</span>
@@ -1378,10 +1615,10 @@ export default function SendPage() {
                         <div className="flex items-center gap-3">
                           <div className={[
                             "flex h-9 w-9 items-center justify-center rounded-xl transition-colors",
-                            passwordEnabled ? "bg-orange-500/10" : "bg-gray-100 dark:bg-zinc-800",
+                            passwordEnabled ? "bg-emerald-500/10" : "bg-gray-100 dark:bg-zinc-800",
                           ].join(" ")}>
                             {passwordEnabled
-                              ? <Lock size={15} className="text-orange-500" />
+                              ? <Lock size={15} className="text-emerald-500" />
                               : <Unlock size={15} className="text-gray-400" />}
                           </div>
                           <div>
@@ -1391,7 +1628,7 @@ export default function SendPage() {
                         </div>
                         <label className={[
                           "relative inline-flex h-5 w-9 cursor-pointer items-center rounded-full transition-colors duration-200",
-                          passwordEnabled ? "bg-orange-500" : "bg-gray-200 dark:bg-zinc-600",
+                          passwordEnabled ? "bg-emerald-500" : "bg-gray-200 dark:bg-zinc-600",
                           isSending ? "cursor-not-allowed opacity-50" : "",
                         ].join(" ")}>
                           <input type="checkbox" className="sr-only" checked={passwordEnabled} disabled={isSending}
@@ -1408,7 +1645,7 @@ export default function SendPage() {
                           <input type={showPassword ? "text" : "password"}
                             value={password} onChange={(e) => setPassword(e.target.value)}
                             disabled={isSending} placeholder="Enter a secure password"
-                            className={`${inputCls("orange")} pr-11`}
+                            className={`${inputCls("emerald")} pr-11`}
                           />
                           <button type="button" onClick={() => setShowPassword((p) => !p)}
                             className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 transition-colors hover:text-gray-600">
@@ -1427,11 +1664,11 @@ export default function SendPage() {
 
                 {/* Transfer summary card */}
                 <div className="overflow-hidden rounded-2xl border border-gray-200/80 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-                  <div className="h-1 w-full bg-linear-to-r from-orange-500 via-amber-400 to-orange-400" />
+                  <div className="h-1 w-full bg-linear-to-r from-emerald-500 via-teal-400 to-emerald-400" />
                   <div className="p-5">
                     <div className="mb-4 flex items-center gap-2">
-                      <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-orange-500/10">
-                        <Zap size={13} className="text-orange-500" />
+                      <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-500/10">
+                        <Zap size={13} className="text-emerald-500" />
                       </div>
                       <span className="text-sm font-bold text-(--text)">Transfer Summary</span>
                     </div>
@@ -1457,7 +1694,7 @@ export default function SendPage() {
                         <SummaryRow label="Recipients" value={
                           emails.length > 0
                             ? `${emails.length} email${emails.length !== 1 ? "s" : ""}`
-                            : <span className="text-orange-500">None added</span>
+                            : <span className="text-emerald-500">None added</span>
                         } />
                       )}
                       <SummaryRow label="Expires" value={expiry === "1" ? "1 day" : `${expiry} days`} />
@@ -1469,7 +1706,7 @@ export default function SendPage() {
                       } />
                       <SummaryRow label="Password" value={
                         passwordEnabled
-                          ? <span className="flex items-center gap-1 text-orange-500"><Lock size={10} /> Protected</span>
+                          ? <span className="flex items-center gap-1 text-emerald-500"><Lock size={10} /> Protected</span>
                           : <span className="text-(--text-muted)">None</span>
                       } />
                     </div>
@@ -1491,10 +1728,10 @@ export default function SendPage() {
                         <p className="text-center text-xs text-(--text-muted)">Add files above to get started</p>
                       )}
 
-                      {files.length > 0 && !canSend() && !isSending && (
-                        <div className="flex items-start gap-2 rounded-xl border border-orange-100 bg-orange-50/80 p-3 dark:border-orange-900/20 dark:bg-orange-900/10">
-                          <AlertCircle size={12} className="mt-0.5 shrink-0 text-orange-500" />
-                          <p className="text-xs text-orange-600 dark:text-orange-400">
+                      {totalFileCount > 0 && !canSend() && !isSending && (
+                        <div className="flex items-start gap-2 rounded-xl border border-emerald-100 bg-emerald-50/80 p-3 dark:border-emerald-900/20 dark:bg-emerald-900/10">
+                          <AlertCircle size={12} className="mt-0.5 shrink-0 text-emerald-500" />
+                          <p className="text-xs text-emerald-600 dark:text-emerald-400">
                             {method === "email" && emails.length === 0 ? "Add at least one email address"
                               : passwordEnabled && !password ? "Enter a password or disable protection"
                               : "Fill in the required fields above"}
@@ -1515,10 +1752,10 @@ export default function SendPage() {
                 </div>
 
                 {/* Pro tips */}
-                <div className="rounded-2xl border border-orange-100/80 bg-linear-to-b from-orange-50/60 to-amber-50/30 p-5 dark:border-orange-900/20 dark:from-orange-950/20 dark:to-zinc-900/0">
+                <div className="rounded-2xl border border-emerald-100/80 bg-linear-to-b from-emerald-50/60 to-teal-50/30 p-5 dark:border-emerald-900/20 dark:from-emerald-950/20 dark:to-zinc-900/0">
                   <div className="mb-3 flex items-center gap-2">
-                    <Sparkles size={13} className="text-orange-500" />
-                    <span className="text-xs font-bold uppercase tracking-widest text-orange-600 dark:text-orange-400">Tips</span>
+                    <Sparkles size={13} className="text-emerald-500" />
+                    <span className="text-xs font-bold uppercase tracking-widest text-emerald-600 dark:text-emerald-400">Tips</span>
                   </div>
                   <ul className="space-y-2.5">
                     {[
@@ -1528,10 +1765,10 @@ export default function SendPage() {
                       "Set expiry to auto-delete after your timeframe",
                     ].map((tip, i) => (
                       <li key={i} className="flex items-start gap-2">
-                        <div className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-orange-500/15">
-                          <Check size={9} className="text-orange-500" />
+                        <div className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-emerald-500/15">
+                          <Check size={9} className="text-emerald-500" />
                         </div>
-                        <span className="text-xs leading-relaxed text-orange-700 dark:text-orange-300/80">{tip}</span>
+                        <span className="text-xs leading-relaxed text-emerald-700 dark:text-emerald-300/80">{tip}</span>
                       </li>
                     ))}
                   </ul>
@@ -1599,7 +1836,7 @@ export default function SendPage() {
                               {tx.title || `Transfer ${tx.id.slice(-6)}`}
                             </p>
                             {tx.hasPassword && (
-                              <span className="mt-0.5 flex items-center gap-1 text-[10px] text-orange-500">
+                              <span className="mt-0.5 flex items-center gap-1 text-[10px] text-emerald-500">
                                 <Lock size={9} /> Password protected
                               </span>
                             )}

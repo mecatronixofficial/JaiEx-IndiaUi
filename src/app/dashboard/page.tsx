@@ -565,6 +565,7 @@ function UserDashboard({ name, user }: { name: string; user: any }) {
   const [notifications, setNotifications]     = useState<Notification[]>([]);
   const [unreadCount, setUnreadCount]         = useState(0);
   const [uploadSessions, setUploadSessions]   = useState<any[]>([]);
+  const currentUserId = user?.id ?? user?._id;
 
   const load = useCallback(async (silent = false) => {
     try {
@@ -583,7 +584,7 @@ function UserDashboard({ name, user }: { name: string; user: any }) {
         filesApi.list({ limit: 6, page: 1 }),
         foldersApi.list(),
         notificationsApi.unreadCount(),
-        notificationsApi.list({ limit: 5 }),
+        notificationsApi.list(),
         uploadApi.getSessions({ limit: 4 }),
       ]);
 
@@ -658,7 +659,9 @@ function UserDashboard({ name, user }: { name: string; user: any }) {
       }
 
       if (notifsRes.status === "fulfilled") {
-        setNotifications(getNotificationsFromResponse(notifsRes.value.data).slice(0, 5));
+        const visibleNotifications = getNotificationsFromResponse(notifsRes.value.data, { currentUserId });
+        setNotifications(visibleNotifications.slice(0, 5));
+        setUnreadCount(visibleNotifications.filter((n) => !n.isRead).length);
       }
 
       if (uploadsRes.status === "fulfilled") {
@@ -672,7 +675,7 @@ function UserDashboard({ name, user }: { name: string; user: any }) {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [currentUserId]);
 
   useEffect(() => {
     void Promise.resolve().then(() => load());
@@ -1622,7 +1625,7 @@ function SuperAdminDashboard({ name }: { name: string }) {
             >
               Refresh
             </Button>
-            <Link href="/superadmin">
+            <Link href="/profile">
               <Button leftIcon={<Shield size={15} />} className="rounded-xl border-0 bg-white/20 text-white shadow-none backdrop-blur-sm hover:bg-white/30">
                 Super Admin
               </Button>

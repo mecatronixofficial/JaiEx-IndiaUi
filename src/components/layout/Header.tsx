@@ -235,6 +235,7 @@ export default function Header({
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const currentUserId = user?.id ?? (user as { _id?: string } | null)?._id;
 
   const [notifs, setNotifs]           = useState<Notification[]>([]);
   const [showNotifs, setShowNotifs]   = useState(false);
@@ -276,6 +277,17 @@ export default function Header({
     return Math.min((storageUsed / storageQuota) * 100, 100);
   }, [storageUsed, storageQuota]);
   const hasStorageQuota = storageQuota > 0;
+  const storageLabel = hasStorageQuota
+    ? `${formatBytes(storageUsed)} / ${formatBytes(storageQuota)}`
+    : `${formatBytes(storageUsed)} used`;
+  const storageTitle = storageLoading
+    ? "Loading storage usage"
+    : hasStorageQuota
+      ? `${storageLabel} (${storagePct.toFixed(0)}% used)`
+      : storageLabel;
+  const storageIconClass = hasStorageQuota && storagePct >= 90
+    ? "text-red-500"
+    : "text-orange-500";
   const firstName = useMemo(
     () => (user?.name ?? user?.email ?? "User").split(/\s+/)[0],
     [user?.name, user?.email],
@@ -297,9 +309,9 @@ export default function Header({
   const loadNotifications = useCallback(async () => {
     try {
       const res = await notificationsApi.list({ limit: 8 });
-      setNotifs(getNotificationsFromResponse(res.data));
+      setNotifs(getNotificationsFromResponse(res.data, { currentUserId }));
     } catch { /* Silent */ }
-  }, []);
+  }, [currentUserId]);
 
   useEffect(() => {
     let mounted = true;
@@ -434,10 +446,13 @@ export default function Header({
   }, []);
 
   const markAllRead = useCallback(async () => {
+    const unreadIds = notifs.filter((n) => !n.isRead).map((n) => n.id);
+    if (unreadIds.length === 0) return;
+
     const snapshot = notifs.slice();
     setNotifs((prev) => prev.map((n) => ({ ...n, isRead: true })));
     try {
-      await notificationsApi.markAllRead();
+      await notificationsApi.bulkMarkRead(unreadIds);
       showToast.success("All notifications marked as read");
     } catch {
       setNotifs(snapshot);
@@ -593,17 +608,19 @@ export default function Header({
           {/* Storage — desktop */}
           <div
             className="hidden items-center gap-2 rounded-xl border border-gray-200/80 bg-white px-2.5 py-1.5 dark:border-zinc-800 dark:bg-zinc-900 lg:flex"
-            title={hasStorageQuota ? `${formatBytes(storageUsed)} of ${formatBytes(storageQuota)}` : `${formatBytes(storageUsed)} used`}
+            title={storageTitle}
           >
-            <HardDrive size={14} className={storagePct >= 90 ? "text-red-500" : "text-orange-500"} />
+            <HardDrive size={14} className={storageIconClass} />
             {storageLoading ? (
               <span className="h-3 w-16 animate-pulse rounded bg-gray-200 dark:bg-zinc-800" />
             ) : (
-              <span className="text-[11px] font-semibold text-gray-600 dark:text-gray-300">
-                {hasStorageQuota ? `${storagePct.toFixed(0)}%` : formatBytes(storageUsed)}
-                <span className="ml-1 font-normal text-gray-400">
-                  {hasStorageQuota ? `${formatBytes(storageUsed)} / ${formatBytes(storageQuota)}` : "No quota"}
-                </span>
+              <span className="max-w-40 truncate text-[11px] font-semibold text-gray-600 dark:text-gray-300">
+                {storageLabel}
+                {hasStorageQuota && (
+                  <span className="ml-1 font-normal text-gray-400">
+                    {storagePct.toFixed(0)}%
+                  </span>
+                )}
               </span>
             )}
           </div>
@@ -996,7 +1013,7 @@ export default function Header({
             <p className="mb-5 text-[13px] leading-relaxed text-gray-500 dark:text-gray-400">
               You&apos;ll need to sign in again to access your files.
             </p>
-            <div className="flex gap-2.5">
+            <div className="flex flex-col gap-2.5">
               <Button variant="secondary" fullWidth onClick={() => setShowLogoutModal(false)}>
                 Cancel
               </Button>

@@ -246,7 +246,7 @@ function UserDrawer({
                   </div>
                 </div>
               </div>
-              <div className="flex gap-2.5 pt-1">
+              <div className="flex flex-col gap-2.5 pt-1">
                 <Button variant="secondary" fullWidth type="button" onClick={() => setEditing(false)}>Cancel</Button>
                 <Button fullWidth leftIcon={<Save size={14} />} loading={saving} onClick={handleSave}>Save changes</Button>
               </div>
@@ -852,7 +852,7 @@ export default function AdminUsersPage() {
                 <ChevronDown size={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-gray-400" />
               </div>
             </div>
-            <div className="flex gap-3 pt-2">
+            <div className="flex flex-col gap-3 pt-2">
               <Button variant="secondary" fullWidth type="button" onClick={() => setShowCreate(false)}>Cancel</Button>
               <Button fullWidth type="submit" loading={creating} leftIcon={<Plus size={15} />}>Create User</Button>
             </div>
@@ -881,7 +881,7 @@ export default function AdminUsersPage() {
               min="1" max="10240" step="1"
               helperText="1 GB = 1,073,741,824 bytes"
             />
-            <div className="flex gap-3 pt-2">
+            <div className="flex flex-col gap-3 pt-2">
               <Button variant="secondary" fullWidth type="button" onClick={() => setShowQuota(false)}>Cancel</Button>
               <Button fullWidth type="submit" loading={creating} leftIcon={<HardDrive size={15} />}>Update Quota</Button>
             </div>
@@ -905,7 +905,7 @@ export default function AdminUsersPage() {
                 </p>
               </div>
             </div>
-            <div className="flex gap-3">
+            <div className="flex flex-col gap-3">
               <Button variant="secondary" fullWidth onClick={() => setDeleteTarget(null)}>Cancel</Button>
               <Button variant="danger" fullWidth loading={deleting} leftIcon={<Trash2 size={14} />} onClick={confirmDelete}>
                 Delete permanently

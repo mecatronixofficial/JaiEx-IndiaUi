@@ -277,7 +277,7 @@ function ConfirmDialog({
         </div>
         <h2 className="mb-1 text-base font-bold text-gray-900 dark:text-white">{title}</h2>
         <p className="mb-5 text-sm text-gray-500 dark:text-gray-400">{description}</p>
-        <div className="flex gap-2.5">
+        <div className="flex flex-col gap-2.5">
           <button type="button" onClick={onCancel}
             className="flex-1 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm font-semibold text-gray-700 transition-colors hover:bg-gray-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-gray-300">
             Cancel
@@ -304,6 +304,9 @@ export default function LinksPage() {
   const role         = normalizeRole(user?.role);
   const isAdmin      = role === "ADMIN" || role === "SUPERADMIN";
   const isSuperAdmin = role === "SUPERADMIN";
+  const scopeDescription = isSuperAdmin
+    ? methodConfig.description
+    : "Create and manage links for your uploaded files and folders";
 
   const [links, setLinks]       = useState<SharedLink[]>([]);
   const [loading, setLoading]   = useState(true);
@@ -338,14 +341,14 @@ export default function LinksPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = isAdmin ? await linksApi.adminList() : await linksApi.list();
+      const res = isSuperAdmin ? await linksApi.adminList() : await linksApi.list();
       setLinks(getLinksFromResponse(res.data));
     } catch (err) {
       handleApiError(err);
     } finally {
       setLoading(false);
     }
-  }, [isAdmin]);
+  }, [isSuperAdmin]);
 
   useEffect(() => {
     void Promise.resolve().then(load);
@@ -451,7 +454,7 @@ export default function LinksPage() {
     const prev = links.slice();
     setLinks((ls) => ls.map((l) => l.id === link.id ? { ...l, status: "disabled" as const } : l));
     try {
-      if (isAdmin) await linksApi.adminDisable(link.id);
+      if (isSuperAdmin) await linksApi.adminDisable(link.id);
       else await linksApi.disable(link.id);
       showToast.success("Link disabled");
     } catch (err) { setLinks(prev); handleApiError(err); }
@@ -463,7 +466,7 @@ export default function LinksPage() {
     const prev = links.slice();
     setLinks((ls) => ls.map((l) => l.id === link.id ? { ...l, status: "active" as const } : l));
     try {
-      if (isAdmin) await linksApi.adminEnable(link.id);
+      if (isSuperAdmin) await linksApi.adminEnable(link.id);
       else await linksApi.enable(link.id);
       showToast.success("Link enabled");
     } catch (err) { setLinks(prev); handleApiError(err); }
@@ -475,7 +478,7 @@ export default function LinksPage() {
     const prev = links.slice();
     setLinks((ls) => ls.filter((l) => l.id !== link.id));
     try {
-      if (isAdmin) await linksApi.adminDelete(link.id);
+      if (isSuperAdmin) await linksApi.adminDelete(link.id);
       else await linksApi.delete(link.id);
       showToast.success("Link deleted");
     } catch (err) { setLinks(prev); handleApiError(err); }
@@ -484,7 +487,7 @@ export default function LinksPage() {
   async function handleRenew(id: string) {
     setMenuOpen(null);
     try {
-      if (isAdmin) await linksApi.adminRenew(id, 7);
+      if (isSuperAdmin) await linksApi.adminRenew(id, 7);
       else await linksApi.renew(id, 7);
       showToast.success("Link extended by 7 days");
       load();
@@ -562,7 +565,7 @@ export default function LinksPage() {
                 </span>
               </div>
               <p className="mt-0.5 text-sm text-gray-500 dark:text-gray-400">
-                {isAdmin ? methodConfig.description : "Create and manage links for your uploaded files and folders"}
+                {scopeDescription}
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -737,7 +740,7 @@ export default function LinksPage() {
               <EmptyState
                 icon={<LinkIcon size={36} />}
                 title="No links found"
-                description={search ? "Try a different search term" : `No ${methodConfig.label.toLowerCase()} shares exist on the platform yet`}
+                description={search ? "Try a different search term" : `No ${methodConfig.label.toLowerCase()} shares found in this view`}
               />
             ) : (
               <div className="overflow-x-auto">
@@ -1227,7 +1230,7 @@ export default function LinksPage() {
                   </div>
                 </div>
 
-                <div className="mt-5 flex justify-end gap-2">
+                <div className="mt-5 flex flex-col justify-end gap-2">
                   <button type="button" onClick={() => setShowCreate(false)}
                     className="rounded-xl border border-gray-200 px-4 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-50 dark:border-zinc-700 dark:text-gray-300 dark:hover:bg-zinc-800">
                     Cancel

@@ -172,7 +172,7 @@ const SECTIONS: SectionDef[] = [
       { href: "/admin/users", label: "Users", icon: <Users size={15} /> },
       { href: "/admin/roles", label: "Roles", icon: <ShieldCheck size={15} />, maxRole: "ADMIN" },
       { href: "/admin/files", label: "Files Manager", icon: <Files size={15} /> },
-      { href: "/admin/links", label: "Links Manager", icon: <Link2 size={15} /> },
+      { href: "/admin/links", label: "Links Manager", icon: <Link2 size={15} />, minRole: "SUPERADMIN" },
       { href: "/admin/storage", label: "Storage Manager", icon: <HardDrive size={15} /> },
       { href: "/admin/transfers", label: "Transfer Manager", icon: <ArrowLeftRight size={15} /> },
       { href: "/admin/activity", label: "Activity Log", icon: <Activity size={15} />, maxRole: "ADMIN" },
@@ -256,15 +256,21 @@ function StorageBar({ pct, gradient }: { pct: number; gradient: string }) {
 function WorkspaceSnapshot({
   usedPct,
   storageUsed,
-  storageQuota,
+  storageAvailable,
   storageLoading,
+  storageLabel,
+  storageTitle,
+  hasStorageQuota,
   roleLabel,
   moduleCount,
 }: {
   usedPct: number;
   storageUsed: number;
-  storageQuota: number;
+  storageAvailable: number;
   storageLoading: boolean;
+  storageLabel: string;
+  storageTitle: string;
+  hasStorageQuota: boolean;
   roleLabel: string;
   moduleCount: number;
 }) {
@@ -287,8 +293,11 @@ function WorkspaceSnapshot({
           {storageLoading ? (
             <div className="mt-1 h-3 w-12 animate-pulse rounded bg-gray-200 dark:bg-zinc-800" />
           ) : (
-            <p className="mt-0.5 font-semibold text-gray-700 dark:text-gray-200">
-              {storageQuota > 0 ? `${usedPct.toFixed(0)}% used` : formatBytes(storageUsed)}
+            <p
+              className="mt-0.5 truncate font-semibold text-gray-700 dark:text-gray-200"
+              title={storageTitle}
+            >
+              {storageLabel}
             </p>
           )}
         </div>
@@ -301,8 +310,8 @@ function WorkspaceSnapshot({
       </div>
       {!storageLoading && (
         <p className="mt-2 truncate text-[10px] text-gray-400 dark:text-gray-500">
-          {storageQuota > 0
-            ? `${formatBytes(storageUsed)} of ${formatBytes(storageQuota)} on Cloudflare R2`
+          {hasStorageQuota
+            ? `${usedPct.toFixed(0)}% used · ${formatBytes(storageAvailable)} free`
             : `${formatBytes(storageUsed)} used on Cloudflare R2`}
         </p>
       )}
@@ -503,7 +512,7 @@ interface SidebarProps {
 ════════════════════════════════════════ */
 function Sidebar({
   storageUsed = 0,
-  storageQuota = 10_737_418_240,
+  storageQuota = 0,
   storageLoading = false,
   onUpload,
   mobileOpen = false,
@@ -627,11 +636,22 @@ function Sidebar({
   }, [storageUsed, storageQuota]);
   const hasStorageQuota = storageQuota > 0;
   const storageAvailable = Math.max(storageQuota - storageUsed, 0);
+  const storageLabel = hasStorageQuota
+    ? `${formatBytes(storageUsed)} / ${formatBytes(storageQuota)}`
+    : `${formatBytes(storageUsed)} used`;
+  const storageTitle = storageLoading
+    ? "Loading storage usage"
+    : hasStorageQuota
+      ? `${storageLabel} (${usedPct.toFixed(0)}% used)`
+      : storageLabel;
+  const storageIconClass = hasStorageQuota && usedPct >= 90
+    ? "text-red-500"
+    : "text-orange-400";
 
   const storageGradient =
-    usedPct >= 90
+    hasStorageQuota && usedPct >= 90
       ? "from-red-500 to-rose-600"
-      : usedPct >= 75
+      : hasStorageQuota && usedPct >= 75
         ? "from-amber-500 to-orange-500"
         : "from-orange-400 via-amber-400 to-yellow-300";
 
@@ -799,8 +819,11 @@ function Sidebar({
           <WorkspaceSnapshot
             usedPct={usedPct}
             storageUsed={storageUsed}
-            storageQuota={storageQuota}
+            storageAvailable={storageAvailable}
             storageLoading={storageLoading}
+            storageLabel={storageLabel}
+            storageTitle={storageTitle}
+            hasStorageQuota={hasStorageQuota}
             roleLabel={roleBadge.label}
             moduleCount={moduleCount}
           />
@@ -894,7 +917,7 @@ function Sidebar({
           <div className="shrink-0 border-t border-gray-200/70 px-4 py-3.5 dark:border-zinc-800/60">
             <div className="mb-2.5 flex items-center justify-between">
               <div className="flex items-center gap-1.5">
-                <HardDrive size={11} className="text-orange-400" />
+                <HardDrive size={11} className={storageIconClass} />
                 <span className="text-[11px] font-semibold text-gray-600 dark:text-gray-300">
                   Storage
                 </span>
@@ -902,17 +925,15 @@ function Sidebar({
               {storageLoading ? (
                 <span className="inline-block h-3 w-20 animate-pulse rounded bg-gray-200 dark:bg-zinc-800" />
               ) : (
-                <span className="text-[10.5px] text-gray-400 dark:text-gray-500">
-                  <span className="font-semibold text-gray-700 dark:text-gray-200">
-                    {formatBytes(storageUsed)}
-                  </span>
-                  {hasStorageQuota ? (
-                    <>
-                      <span className="mx-0.5 text-gray-300 dark:text-zinc-700">/</span>
-                      {formatBytes(storageQuota)}
-                    </>
-                  ) : (
-                    <span className="ml-1">used</span>
+                <span
+                  className="max-w-36 truncate text-[10.5px] font-semibold text-gray-700 dark:text-gray-200"
+                  title={storageTitle}
+                >
+                  {storageLabel}
+                  {hasStorageQuota && (
+                    <span className="ml-1 font-normal text-gray-400 dark:text-gray-500">
+                      {usedPct.toFixed(0)}%
+                    </span>
                   )}
                 </span>
               )}
@@ -945,9 +966,7 @@ function Sidebar({
         {/* ── Storage strip (collapsed) ── */}
         {collapsed && !storageLoading && (
           <div className="shrink-0 border-t border-gray-200/70 px-3 py-3 dark:border-zinc-800/60">
-            <div
-              title={hasStorageQuota ? `${formatBytes(storageUsed)} / ${formatBytes(storageQuota)}` : `${formatBytes(storageUsed)} used`}
-            >
+            <div title={storageTitle}>
               <StorageBar pct={usedPct} gradient={storageGradient} />
             </div>
           </div>
@@ -1042,7 +1061,7 @@ function Sidebar({
             <p className="mb-5 text-[13px] leading-relaxed text-gray-500 dark:text-gray-400">
               You&apos;ll need to sign in again to access your files.
             </p>
-            <div className="flex gap-2.5">
+            <div className="flex flex-col gap-2.5">
               <Button
                 variant="secondary"
                 fullWidth

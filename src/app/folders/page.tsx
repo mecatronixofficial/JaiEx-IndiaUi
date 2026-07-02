@@ -821,7 +821,7 @@ export default function FoldersPage() {
                     ))}
                   </div>
                 </div>
-                <div className="mt-5 flex gap-3">
+                <div className="mt-5 flex flex-col gap-3">
                   <Button variant="secondary" fullWidth rounded="xl" type="button"
                     onClick={() => { setShowCreate(false); setFolderName(""); setFolderDescription(""); }}>
                     Cancel
@@ -869,7 +869,7 @@ export default function FoldersPage() {
                     ))}
                   </div>
                 </div>
-                <div className="mt-5 flex gap-3">
+                <div className="mt-5 flex flex-col gap-3">
                   <Button variant="secondary" fullWidth rounded="xl" type="button"
                     onClick={() => { setShowRename(false); setRenameTarget(null); setFolderName(""); setFolderDescription(""); }}>
                     Cancel
@@ -907,7 +907,7 @@ export default function FoldersPage() {
                   ) : null}
                 </p>
                 <p className="mb-5 text-xs font-semibold text-red-500">This action cannot be undone.</p>
-                <div className="flex gap-3">
+                <div className="flex flex-col gap-3">
                   <Button variant="secondary" fullWidth rounded="xl" onClick={() => setShowDeleteConfirm(false)}>Cancel</Button>
                   <Button variant="danger" fullWidth rounded="xl" loading={submitting} leftIcon={<Trash2 size={14} />} onClick={confirmDelete}>
                     Delete

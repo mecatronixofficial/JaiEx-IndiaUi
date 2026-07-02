@@ -107,14 +107,14 @@ function OtpInput({
             onPaste={handlePaste}
             className={`
               w-11 h-13 text-center text-lg font-bold
-              rounded-2xl border-2 bg-white text-gray-900
+              rounded-2xl border-2 bg-white text-gray-900 dark:bg-zinc-900 dark:text-white
               transition-all duration-200 outline-none shadow-sm
               focus:ring-4
               ${error
                 ? "border-red-400 focus:border-red-500 focus:ring-red-500/15"
                 : value[i]
                   ? "border-orange-400 focus:border-orange-500 focus:ring-orange-500/15"
-                  : "border-gray-200 hover:border-orange-300 focus:border-orange-500 focus:ring-orange-500/15"
+                  : "border-gray-200 hover:border-orange-300 focus:border-orange-500 focus:ring-orange-500/15 dark:border-zinc-700"
               }
             `}
           />
@@ -236,20 +236,20 @@ export default function LoginPage() {
   /* ── Loading screen ── */
   if (isLoading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-white">
+      <div className="flex min-h-screen items-center justify-center bg-white dark:bg-zinc-950">
         <div className="flex flex-col items-center gap-4">
           <div className="relative h-12 w-12">
             <div className="absolute inset-0 rounded-full border-4 border-orange-100" />
             <div className="absolute inset-0 rounded-full border-4 border-orange-500 border-t-transparent animate-spin" />
           </div>
-          <p className="text-sm font-semibold text-gray-400 tracking-wide">Loading workspace…</p>
+          <p className="text-sm font-semibold text-gray-400 tracking-wide dark:text-gray-500">Loading workspace…</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="flex min-h-screen">
+    <div className="flex min-h-screen bg-white dark:bg-zinc-950">
 
       {/* ══════════════════════════════════════
           LEFT PANEL
@@ -360,10 +360,10 @@ export default function LoginPage() {
       {/* ══════════════════════════════════════
           RIGHT PANEL
       ══════════════════════════════════════ */}
-      <div className="login-right-bg flex flex-1 items-center justify-center px-5 py-12 lg:px-14">
+      <div className="login-right-bg flex flex-1 items-center justify-center px-5 py-12 dark:bg-zinc-950 lg:px-14">
         <div className="animate-fade-in w-full max-w-md">
           {/* Card */}
-          <div className="rounded-3xl bg-white p-8 shadow-xl shadow-gray-200/80 ring-1 ring-gray-100 lg:p-10">
+          <div className="rounded-3xl bg-white p-8 shadow-xl shadow-gray-200/80 ring-1 ring-gray-100 dark:bg-zinc-900 dark:shadow-none dark:ring-zinc-800 lg:p-10">
 
             {/* Mobile logo */}
             <div className="mb-8 flex items-center gap-3 lg:hidden">
@@ -376,7 +376,7 @@ export default function LoginPage() {
                   className="object-contain"
                 />
               </div>
-              <span className="font-bold text-gray-900">Jai India</span>
+              <span className="font-bold text-gray-900 dark:text-white">Jai India</span>
             </div>
 
             {/* Multi-step indicator */}
@@ -388,7 +388,7 @@ export default function LoginPage() {
                       className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold transition-all duration-300 ${
                         step === s || (s === "forgot" && step === "reset")
                           ? "bg-orange-500 text-white shadow-lg shadow-orange-500/30"
-                          : "bg-gray-100 text-gray-400"
+                          : "bg-gray-100 text-gray-400 dark:bg-zinc-800 dark:text-gray-500"
                       }`}
                     >
                       {s === "forgot" && step === "reset" ? (
@@ -399,7 +399,7 @@ export default function LoginPage() {
                     </div>
                     {i === 0 && (
                       <div
-                        className={`h-0.5 flex-1 rounded-full transition-all duration-500 ${step === "reset" ? "bg-orange-500" : "bg-gray-200"}`}
+                        className={`h-0.5 flex-1 rounded-full transition-all duration-500 ${step === "reset" ? "bg-orange-500" : "bg-gray-200 dark:bg-zinc-700"}`}
                       />
                     )}
                   </div>
@@ -409,7 +409,7 @@ export default function LoginPage() {
 
             {/* Header */}
             <div className="mb-7">
-              <span className="mb-3 inline-flex items-center gap-1.5 rounded-full bg-orange-50 px-3 py-1.5 text-xs font-semibold text-orange-600 ring-1 ring-orange-200">
+              <span className="mb-3 inline-flex items-center gap-1.5 rounded-full bg-orange-50 px-3 py-1.5 text-xs font-semibold text-orange-600 ring-1 ring-orange-200 dark:bg-orange-500/10 dark:text-orange-400 dark:ring-orange-900/40">
                 <Lock size={11} />
                 {step === "login"
                   ? "Secure sign-in"
@@ -418,19 +418,19 @@ export default function LoginPage() {
                   : "Account recovery — step 2"}
               </span>
 
-              <h1 className="text-[1.85rem] font-bold tracking-tight text-gray-900">
+              <h1 className="text-[1.85rem] font-bold tracking-tight text-gray-900 dark:text-white">
                 {step === "login" && "Welcome back"}
                 {step === "forgot" && "Forgot password?"}
                 {step === "reset" && "Create new password"}
               </h1>
 
-              <p className="mt-1.5 text-sm leading-relaxed text-gray-500">
+              <p className="mt-1.5 text-sm leading-relaxed text-gray-500 dark:text-gray-400">
                 {step === "login" && "Sign in to access your secure workspace."}
                 {step === "forgot" && "Enter your email and we'll send reset instructions."}
                 {step === "reset" && (
                   <>
                     We sent a 6-digit code to{" "}
-                    <span className="font-semibold text-gray-700">{email || "your email"}</span>.
+                    <span className="font-semibold text-gray-700 dark:text-gray-200">{email || "your email"}</span>.
                   </>
                 )}
               </p>
@@ -440,11 +440,11 @@ export default function LoginPage() {
             {step === "login" && (
               <form onSubmit={handleLogin} className="space-y-5 animate-fade-in">
                 {errors.general && (
-                  <div className="flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 px-4 py-3.5">
+                  <div className="flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 px-4 py-3.5 dark:border-red-900/50 dark:bg-red-950/30">
                     <div className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-red-500">
                       <span className="text-[10px] font-extrabold text-white">!</span>
                     </div>
-                    <p className="text-sm font-medium text-red-700">{errors.general}</p>
+                    <p className="text-sm font-medium text-red-700 dark:text-red-300">{errors.general}</p>
                   </div>
                 )}
 
@@ -483,12 +483,12 @@ export default function LoginPage() {
                       className={`flex h-5 w-5 items-center justify-center rounded-md border-2 transition-all duration-200 ${
                         rememberMe
                           ? "border-orange-500 bg-orange-500 shadow-md shadow-orange-500/30"
-                          : "border-gray-300 bg-white"
+                          : "border-gray-300 bg-white dark:border-zinc-600 dark:bg-zinc-800"
                       }`}
                     >
                       {rememberMe && <Check size={11} className="text-white" strokeWidth={3} />}
                     </div>
-                    <span className="text-sm font-medium text-gray-600">Remember me</span>
+                    <span className="text-sm font-medium text-gray-600 dark:text-gray-300">Remember me</span>
                   </label>
 
                   <button
@@ -514,18 +514,18 @@ export default function LoginPage() {
 
                 <div className="relative py-1">
                   <div className="absolute inset-0 flex items-center">
-                    <div className="w-full border-t border-gray-100" />
+                    <div className="w-full border-t border-gray-100 dark:border-zinc-800" />
                   </div>
                   <div className="relative flex justify-center">
-                    <span className="bg-white px-3 text-xs font-medium text-gray-400">
+                    <span className="bg-white px-3 text-xs font-medium text-gray-400 dark:bg-zinc-900 dark:text-gray-500">
                       Don&apos;t have an account?
                     </span>
                   </div>
                 </div>
 
-                <p className="text-center text-sm text-gray-500">
+                <p className="text-center text-sm text-gray-500 dark:text-gray-400">
                   Contact your{" "}
-                  <span className="font-semibold text-gray-700">administrator</span>{" "}
+                  <span className="font-semibold text-gray-700 dark:text-gray-200">administrator</span>{" "}
                   to get access.
                 </p>
               </form>
@@ -561,7 +561,7 @@ export default function LoginPage() {
                 <button
                   type="button"
                   onClick={() => goToStep("login")}
-                  className="flex w-full items-center justify-center gap-2 py-2 text-sm font-medium text-gray-500 transition hover:text-gray-700"
+                  className="flex w-full items-center justify-center gap-2 py-2 text-sm font-medium text-gray-500 transition hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
                 >
                   <ArrowLeft size={15} />
                   Back to sign in
@@ -573,7 +573,7 @@ export default function LoginPage() {
             {step === "reset" && (
               <form onSubmit={handleResetPassword} className="space-y-6 animate-fade-in">
                 <div className="space-y-3">
-                  <label className="block text-center text-sm font-semibold text-gray-700">
+                  <label className="block text-center text-sm font-semibold text-gray-700 dark:text-gray-300">
                     Enter 6-digit OTP
                   </label>
                   <OtpInput
@@ -602,12 +602,12 @@ export default function LoginPage() {
                           <div
                             key={i}
                             className={`h-1 flex-1 rounded-full transition-all duration-300 ${
-                              i < strength.score ? strength.color : "bg-gray-200"
+                              i < strength.score ? strength.color : "bg-gray-200 dark:bg-zinc-700"
                             }`}
                           />
                         ))}
                       </div>
-                      <p className="text-xs text-gray-500">
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
                         Strength:{" "}
                         <span
                           className={
@@ -642,7 +642,7 @@ export default function LoginPage() {
                 <button
                   type="button"
                   onClick={() => goToStep("login")}
-                  className="flex w-full items-center justify-center gap-2 py-2 text-sm font-medium text-gray-500 transition hover:text-gray-700"
+                  className="flex w-full items-center justify-center gap-2 py-2 text-sm font-medium text-gray-500 transition hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
                 >
                   <ArrowLeft size={15} />
                   Back to sign in
@@ -654,7 +654,7 @@ export default function LoginPage() {
             {step === "login" && (
               <div className="mt-6 flex items-center justify-center gap-5">
                 {TRUST.map(({ Icon, label }) => (
-                  <div key={label} className="flex items-center gap-1.5 text-xs font-medium text-gray-400">
+                  <div key={label} className="flex items-center gap-1.5 text-xs font-medium text-gray-400 dark:text-gray-500">
                     <Icon size={13} />
                     {label}
                   </div>

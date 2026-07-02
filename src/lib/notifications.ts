@@ -1,6 +1,9 @@
 import { Notification } from "@/types";
 
 type UnknownRecord = Record<string, unknown>;
+type NotificationFilterOptions = {
+  currentUserId?: string | null;
+};
 
 function asRecord(value: unknown): UnknownRecord {
   return value && typeof value === "object" ? (value as UnknownRecord) : {};
@@ -34,6 +37,42 @@ function readNumber(...values: unknown[]): number {
   return 0;
 }
 
+function readIdFromValue(value: unknown): string {
+  if (typeof value === "string" || typeof value === "number") return readString(value);
+  const record = asRecord(value);
+  return readString(record.id, record._id, record.userId);
+}
+
+function getNotificationUserIds(record: UnknownRecord): string[] {
+  const metadata = asRecord(record.metadata);
+
+  return [
+    record.userId,
+    record.user_id,
+    record.recipientId,
+    record.recipient_id,
+    record.toUserId,
+    record.to_user_id,
+    record.receiverId,
+    record.receiver_id,
+    record.user,
+    record.recipient,
+    record.toUser,
+    record.receiver,
+    metadata.userId,
+    metadata.recipientId,
+    metadata.toUserId,
+    metadata.receiverId,
+  ]
+    .map(readIdFromValue)
+    .filter(Boolean);
+}
+
+function belongsToCurrentUser(item: unknown, currentUserId?: string | null): boolean {
+  if (!currentUserId) return false;
+  return getNotificationUserIds(asRecord(item)).includes(currentUserId);
+}
+
 function unwrap(payload: unknown): unknown {
   const root = asRecord(payload);
   const first = root.data ?? root;
@@ -62,6 +101,7 @@ export function normalizeNotification(item: unknown): Notification {
   const record = asRecord(item);
   const id = readString(record.id, record._id, record.notificationId);
   const message = readString(record.message, record.body, record.description, record.text);
+  const [userId = ""] = getNotificationUserIds(record);
 
   return {
     id,
@@ -70,7 +110,7 @@ export function normalizeNotification(item: unknown): Notification {
     title: readString(record.title, record.subject, message) || "Notification",
     message,
     isRead: readBoolean(record.isRead, record.read, record.seen, record.is_read),
-    userId: readString(record.userId, record.user),
+    userId,
     targetType: (readString(record.targetType, record.resourceType) || null) as Notification["targetType"],
     targetId: readString(record.targetId, record.resourceId) || null,
     metadata: asRecord(record.metadata),
@@ -78,8 +118,13 @@ export function normalizeNotification(item: unknown): Notification {
   };
 }
 
-export function getNotificationsFromResponse(payload: unknown): Notification[] {
+export function getNotificationsFromResponse(payload: unknown, options?: NotificationFilterOptions): Notification[] {
   return readNotificationArray(payload)
+    .filter((item) => (
+      options && "currentUserId" in options
+        ? belongsToCurrentUser(item, options.currentUserId)
+        : true
+    ))
     .map(normalizeNotification)
     .filter((notification) => notification.id);
 }

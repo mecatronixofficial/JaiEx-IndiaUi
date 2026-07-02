@@ -84,7 +84,7 @@ function Field({
 }) {
   return (
     <div className="space-y-1.5">
-      <label className="inline-flex items-center gap-1 text-sm font-semibold text-gray-700">
+      <label className="inline-flex items-center gap-1 text-sm font-semibold text-gray-700 dark:text-gray-300">
         {label}
         {required && <span className="text-orange-500">*</span>}
       </label>
@@ -103,12 +103,12 @@ function Field({
 
 const inputClass = (hasError: boolean) =>
   `w-full rounded-2xl border-2 bg-white px-4 py-3 text-sm text-gray-900 outline-none
-   placeholder:text-gray-400 transition-all duration-200 shadow-sm
+   placeholder:text-gray-400 transition-all duration-200 shadow-sm dark:bg-zinc-900 dark:text-white dark:placeholder:text-gray-500
    focus:ring-4
    ${
      hasError
-       ? "border-red-400 focus:border-red-500 focus:ring-red-500/12"
-       : "border-gray-200 hover:border-orange-300 focus:border-orange-500 focus:ring-orange-500/12"
+       ? "border-red-400 focus:border-red-500 focus:ring-red-500/12 dark:border-red-500"
+       : "border-gray-200 hover:border-orange-300 focus:border-orange-500 focus:ring-orange-500/12 dark:border-zinc-700 dark:hover:border-orange-700"
    }`;
 
 /* ─────────────────────────────────────────────
@@ -157,7 +157,7 @@ export default function ContactPage() {
   }
 
   return (
-    <div className="min-h-screen bg-white">
+    <div className="min-h-screen bg-white text-gray-900 dark:bg-zinc-950 dark:text-white">
       {/* ══════════════════════════════════════
           HERO HEADER
       ══════════════════════════════════════ */}
@@ -196,13 +196,13 @@ export default function ContactPage() {
       {/* ══════════════════════════════════════
           CONTACT CARDS
       ══════════════════════════════════════ */}
-      <div className="bg-orange-50">
+      <div className="bg-orange-50 dark:bg-zinc-950">
         <div className="mx-auto grid max-w-6xl grid-cols-1 gap-4 px-6 py-10 sm:grid-cols-3">
           {CONTACT_CARDS.map(({ Icon, title, detail, sub, href }) => (
             <a
               key={title}
               href={href}
-              className="group flex items-start gap-4 rounded-2xl bg-white p-5 shadow-sm ring-1 ring-orange-100 transition-all duration-300 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-orange-500/10 hover:ring-orange-300"
+              className="group flex items-start gap-4 rounded-2xl bg-white p-5 shadow-sm ring-1 ring-orange-100 transition-all duration-300 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-orange-500/10 hover:ring-orange-300 dark:bg-zinc-900 dark:ring-zinc-800 dark:hover:ring-orange-700"
             >
               <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-orange-500 shadow-md shadow-orange-500/30 transition-transform duration-300 group-hover:scale-110">
                 <Icon size={18} className="text-white" />
@@ -211,10 +211,10 @@ export default function ContactPage() {
                 <p className="text-xs font-bold uppercase tracking-widest text-orange-500">
                   {title}
                 </p>
-                <p className="mt-0.5 text-sm font-semibold text-gray-800">
+                <p className="mt-0.5 text-sm font-semibold text-gray-800 dark:text-gray-100">
                   {detail}
                 </p>
-                <p className="mt-0.5 text-xs text-gray-400">{sub}</p>
+                <p className="mt-0.5 text-xs text-gray-400 dark:text-gray-500">{sub}</p>
               </div>
             </a>
           ))}
@@ -224,28 +224,28 @@ export default function ContactPage() {
       {/* ══════════════════════════════════════
           ENQUIRY FORM
       ══════════════════════════════════════ */}
-      <div className="bg-orange-50 px-6 pb-20">
+      <div className="bg-orange-50 px-6 pb-20 dark:bg-zinc-950">
         <div className="mx-auto max-w-6xl">
           {submitted ? (
             /* ── Success state ── */
-            <div className="animate-fade-in rounded-3xl bg-white p-12 text-center shadow-xl shadow-gray-200/80 ring-1 ring-gray-100">
+            <div className="animate-fade-in rounded-3xl bg-white p-12 text-center shadow-xl shadow-gray-200/80 ring-1 ring-gray-100 dark:bg-zinc-900 dark:shadow-none dark:ring-zinc-800">
               <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full bg-emerald-500 shadow-xl shadow-emerald-500/30">
                 <CheckCircle2 size={36} className="text-white" />
               </div>
-              <h2 className="text-2xl font-bold text-gray-900">
+              <h2 className="text-2xl font-bold text-gray-900 dark:text-white">
                 Enquiry sent!
               </h2>
-              <p className="mx-auto mt-3 max-w-sm text-base leading-relaxed text-gray-500">
+              <p className="mx-auto mt-3 max-w-sm text-base leading-relaxed text-gray-500 dark:text-gray-400">
                 Thanks,{" "}
-                <strong className="text-gray-700">
+                <strong className="text-gray-700 dark:text-gray-200">
                   {form.name.split(" ")[0]}
                 </strong>
                 ! We&apos;ve received your message and will reply to{" "}
-                <strong className="text-gray-700">{form.email}</strong> within
+                <strong className="text-gray-700 dark:text-gray-200">{form.email}</strong> within
                 one business day.
               </p>
 
-              <div className="mx-auto mt-8 max-w-sm rounded-2xl bg-gray-50 px-6 py-5 text-left ring-1 ring-gray-200 space-y-3">
+              <div className="mx-auto mt-8 max-w-sm rounded-2xl bg-gray-50 px-6 py-5 text-left ring-1 ring-gray-200 space-y-3 dark:bg-zinc-800/70 dark:ring-zinc-700">
                 {[
                   { label: "Subject", value: form.subject },
                   { label: "Company", value: form.company || "—" },
@@ -257,7 +257,7 @@ export default function ContactPage() {
                     <span className="shrink-0 text-xs font-semibold uppercase tracking-wider text-gray-400">
                       {label}
                     </span>
-                    <span className="text-right text-sm font-medium text-gray-700">
+                    <span className="text-right text-sm font-medium text-gray-700 dark:text-gray-200">
                       {value}
                     </span>
                   </div>
@@ -284,7 +284,7 @@ export default function ContactPage() {
                       message: "",
                     });
                   }}
-                  className="inline-flex items-center justify-center gap-2 rounded-xl border-2 border-gray-200 px-6 py-3 text-sm font-semibold text-gray-600 transition hover:border-orange-300 hover:text-orange-600"
+                  className="inline-flex items-center justify-center gap-2 rounded-xl border-2 border-gray-200 px-6 py-3 text-sm font-semibold text-gray-600 transition hover:border-orange-300 hover:text-orange-600 dark:border-zinc-700 dark:text-gray-300 dark:hover:border-orange-600 dark:hover:text-orange-400"
                 >
                   Send another
                 </button>
@@ -295,17 +295,17 @@ export default function ContactPage() {
             <form
               onSubmit={handleSubmit}
               noValidate
-              className="animate-fade-in rounded-3xl bg-white p-8 shadow-xl shadow-gray-200/80 ring-1 ring-gray-100 lg:p-14"
+              className="animate-fade-in rounded-3xl bg-white p-8 shadow-xl shadow-gray-200/80 ring-1 ring-gray-100 dark:bg-zinc-900 dark:shadow-none dark:ring-zinc-800 lg:p-14"
             >
-              <div className="mb-8 flex items-center gap-3 border-b border-gray-100 pb-7">
+              <div className="mb-8 flex items-center gap-3 border-b border-gray-100 pb-7 dark:border-zinc-800">
                 <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-orange-500 shadow-md shadow-orange-500/30">
                   <Send size={17} className="text-white" />
                 </div>
                 <div>
-                  <h2 className="text-lg font-bold text-gray-900">
+                  <h2 className="text-lg font-bold text-gray-900 dark:text-white">
                     Send an enquiry
                   </h2>
-                  <p className="text-sm text-gray-500">
+                  <p className="text-sm text-gray-500 dark:text-gray-400">
                     Fields marked{" "}
                     <span className="font-semibold text-orange-500">*</span> are
                     required.
@@ -435,7 +435,7 @@ export default function ContactPage() {
                       onChange={(e) => set("message", e.target.value)}
                       className={`${inputClass(!!errors.message)} resize-none py-3.5`}
                     />
-                    <span className="absolute bottom-3 right-4 text-xs tabular-nums text-gray-300">
+                    <span className="absolute bottom-3 right-4 text-xs tabular-nums text-gray-300 dark:text-gray-600">
                       {form.message.length}
                     </span>
                   </div>
@@ -443,7 +443,7 @@ export default function ContactPage() {
               </div>
 
               {/* Privacy note */}
-              <p className="mt-4 text-xs leading-relaxed text-gray-400">
+              <p className="mt-4 text-xs leading-relaxed text-gray-400 dark:text-gray-500">
                 By submitting this form you agree to our{" "}
                 <Link
                   href="/privacy"
@@ -481,9 +481,9 @@ export default function ContactPage() {
               {/* Response time badge */}
               <div className="mt-5 flex items-center justify-center gap-2">
                 <span className="flex h-2 w-2 rounded-full bg-emerald-500" />
-                <span className="text-xs font-medium text-gray-400">
+                <span className="text-xs font-medium text-gray-400 dark:text-gray-500">
                   Average response time:{" "}
-                  <strong className="text-gray-600">under 24 hours</strong>
+                  <strong className="text-gray-600 dark:text-gray-300">under 24 hours</strong>
                 </span>
               </div>
             </form>
