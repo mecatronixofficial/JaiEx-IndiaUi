@@ -17,7 +17,8 @@ const DEFAULT_429_WAIT_MS = 5000;
 const MAX_429_WAIT_MS = 30000;
 const MAX_PART_UPLOAD_RETRIES = 3;
 const PART_UPLOAD_RETRY_BASE_MS = 1000;
-const PART_UPLOAD_TIMEOUT_MS = 10 * 60 * 1000;
+const SIMPLE_UPLOAD_TIMEOUT_MS = 30 * 60 * 1000;
+const PART_UPLOAD_TIMEOUT_MS = 30 * 60 * 1000;
 
 /* =========================
    TYPES
@@ -486,7 +487,7 @@ export const uploadApi = {
       throw new Error(`File is larger than ${Math.round(UPLOAD_LIMITS.MAX_FILE_BYTES / 1024 ** 3)} GB`);
     }
 
-    if (file.size > UPLOAD_LIMITS.MULTIPART_THRESHOLD) {
+    if (file.size >= UPLOAD_LIMITS.MULTIPART_THRESHOLD) {
       return uploadApi.uploadMultipartFile(file, folderId, onProgress, signal);
     }
 
@@ -498,6 +499,7 @@ export const uploadApi = {
     // Content-Type must be unset so the browser can attach the multipart boundary.
     return getApi().post("/upload/file", formData, {
       signal,
+      timeout: SIMPLE_UPLOAD_TIMEOUT_MS,
       headers: { "Content-Type": undefined },
       onUploadProgress: (progressEvent: AxiosProgressEvent) => {
         if (onProgress && progressEvent.total) {
@@ -678,6 +680,7 @@ export const uploadApi = {
     mimeType:  data.contentType,
     fileSize:  data.size,
     folderId:  data.folderId,
+    partSize:  data.partSize,
   }),
 
   completeMultipart: (data: {
