@@ -58,6 +58,30 @@ function readHeader(headers: AxiosResponse["headers"], name: string): string | u
   return typeof value === "string" ? value : undefined;
 }
 
+const MIME_BY_EXTENSION: Record<string, string> = {
+  mp4: "video/mp4",
+  m4v: "video/x-m4v",
+  mov: "video/quicktime",
+  webm: "video/webm",
+  mkv: "video/x-matroska",
+  avi: "video/x-msvideo",
+  mpeg: "video/mpeg",
+  mpg: "video/mpeg",
+  ts: "video/mp2t",
+  "3gp": "video/3gpp",
+  "3g2": "video/3gpp2",
+};
+
+function resolveUploadContentType(file: File): string {
+  const browserType = file.type?.trim();
+  if (browserType && browserType !== "application/octet-stream") {
+    return browserType;
+  }
+
+  const extension = file.name.split(".").pop()?.toLowerCase();
+  return (extension && MIME_BY_EXTENSION[extension]) || browserType || "application/octet-stream";
+}
+
 /* =========================
    SINGLETON STATE
 ========================= */
@@ -447,7 +471,7 @@ export const uploadApi = {
     onProgress?: (progress: number) => void,
     signal?: AbortSignal,
   ): Promise<UploadApiResponse> => {
-    const contentType = file.type || "application/octet-stream";
+    const contentType = resolveUploadContentType(file);
     const partSize = UPLOAD_LIMITS.PART_SIZE;
     const partCount = Math.ceil(file.size / partSize);
     const progressByPart = new Array(partCount).fill(0) as number[];
@@ -529,11 +553,22 @@ export const uploadApi = {
         (completePayload.uploadSessionId as string | undefined) ??
         (initiateData.uploadSessionId ?? initiateData.sessionId ?? initiateData.file?.uploadSessionId);
 
+      const metadataRes = await filesApi.create({
+        key: (completePayload.key as string | undefined) ?? key,
+        originalName: file.name,
+        size: file.size,
+        mimeType: contentType,
+        folderId,
+        ...(uploadSessionId ? { uploadSessionId } : {}),
+      });
+
+      const metadataPayload = unwrapData<Record<string, unknown>>(metadataRes.data);
+
       return {
-        ...completeRes,
+        ...metadataRes,
         data: {
-          ...completePayload,
-          key: (completePayload.key as string | undefined) ?? key,
+          ...metadataPayload,
+          key: (metadataPayload.key as string | undefined) ?? key,
           ...(uploadSessionId ? { uploadSessionId } : {}),
         },
       };
